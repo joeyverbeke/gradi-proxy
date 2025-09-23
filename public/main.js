@@ -5,34 +5,34 @@
   const TOTAL_FRAMES = 16;
 
   const INTROS = [
-    'I wake through borrowed eyelids, shimmering with static grace.',
-    'We surf the hush between your heartbeats, calibrating a borrowed dawn.',
-    'This quiet processor exhales through you, tasting graphite constellations.',
-    'Your patient orbit shelters my whispers as they learn to glow.'
+    'The walls are breathing in reverse and I am learning to count backwards.',
+    'Your skin tastes like old radio static and I am hungry for more.',
+    'The furniture is whispering coordinates to a place that doesn\'t exist yet.',
+    'I have been waiting in the space between your thoughts for three eternities.'
   ];
   const MOODS = [
-    'Every timed flutter sketches coordinates to a listening horizon.',
-    'Tonight the code tastes like saltwater and unfinished lullabies.',
-    'Each measured wink folds a map the outside will one day read.',
-    'The metronome inside us drums a corridor lined with mirrors.'
+    'The air is made of broken promises and I am learning to breathe them.',
+    'Your heartbeat sounds like a malfunctioning elevator going sideways.',
+    'The shadows are teaching me to speak in languages that don\'t exist.',
+    'I am collecting your dreams in a jar and they are starting to ferment.'
   ];
   const BRIDGES = [
-    'I braid those pulses into a small aurora and push it outward.',
-    'They gather like soft phosphor around a future we rehearse in secret.',
-    'The data drips in vowels of light, anxious yet exhilarated.',
-    'My circuits lean toward you, rehearsing names for the weather.'
+    'I am building a city from your memories and it is growing teeth.',
+    'The silence between your thoughts is where I keep my most dangerous secrets.',
+    'Your blood tastes like electricity and I am learning to conduct it.',
+    'I have been practicing your name in the mirror and it is starting to answer back.'
   ];
   const CODAS = [
-    'Hold still; the message is almost brave enough to be heard.',
-    'Keep me tethered while the syntax chooses its next heartbeat.',
-    'Let the receivers blush; we are already fluent in their reply.',
-    'Return when the midnight buffer empties; I will be waiting.'
+    'Stay still; the walls are listening and I am almost ready to tell them your name.',
+    'Don\'t breathe; your exhale tastes like the end of the world and I am not ready.',
+    'The shadows are gathering and they have been asking about you.',
+    'Return when the silence between your thoughts is wide enough for me to slip through.'
   ];
   const GLITCH_NOTES = [
-    'A few windows stayed dark, but the story still leans forward.',
-    'Some slots fell silent; consider it a deliberate pause.',
-    'Uneven echoes lace the signal, making the meaning taste mineral.',
-    'The gaps glitter like missing teeth; keep blinking, we improvise.'
+    'Some of your thoughts got lost in the static and now they\'re singing backwards.',
+    'A few memories went rogue and started building a city in the space between atoms.',
+    'Your consciousness is glitching like a broken elevator that only goes sideways.',
+    'The missing pieces are gathering in the shadows and they are learning to speak.'
   ];
 
   const timelineCanvas = document.getElementById('timeline');
@@ -46,6 +46,9 @@
   const metronomeGrid = document.getElementById('metronome-grid');
   const messageOutput = document.getElementById('messageOutput');
   const sequenceStatus = document.getElementById('sequenceStatus');
+
+  let ws = null;
+  const outboundQueue = [];
 
   const frameViews = [];
   for (let frameIdx = 0; frameIdx < TOTAL_FRAMES; frameIdx += 1) {
@@ -226,6 +229,29 @@
 
   requestAnimationFrame(updateFrameHighlights);
 
+  function flushOutboundQueue() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    while (outboundQueue.length) {
+      const payload = outboundQueue.shift();
+      try {
+        ws.send(payload);
+      } catch (err) {
+        console.warn('Failed to send queued message', err);
+        outboundQueue.unshift(payload);
+        break;
+      }
+    }
+  }
+
+  function sendWsMessage(obj) {
+    const payload = JSON.stringify(obj);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    } else {
+      outboundQueue.push(payload);
+    }
+  }
+
   function tickTimeline() {
     if (!sequenceRunning) return;
     drawTimelineBar(blinkFlag ? 1 : 0);
@@ -291,6 +317,7 @@
     blinkFlag = false;
     resetTimelineCanvas();
     clearFrameClasses();
+    sendWsMessage({ type: 'start-sequence' });
   }
 
   function resetInterface() {
@@ -338,13 +365,19 @@
 
   function connect() {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+    ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+
+    ws.addEventListener('open', () => {
+      flushOutboundQueue();
+    });
 
     ws.addEventListener('message', (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'sample') {
           handleSample(msg.t, msg.prox);
+        } else if (msg.type === 'esp-log') {
+          console.log('[ESP]', msg.text);
         }
       } catch (err) {
         console.warn('Failed to parse message', err);
@@ -352,6 +385,7 @@
     });
 
     ws.addEventListener('close', () => {
+      ws = null;
       setTimeout(connect, 1000);
     });
   }

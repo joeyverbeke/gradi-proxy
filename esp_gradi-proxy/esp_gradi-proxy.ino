@@ -7,6 +7,7 @@
 
 #include <Wire.h>
 #include <Adafruit_VCNL4040.h>
+#include <string.h>
 
 Adafruit_VCNL4040 vcnl4040;
 
@@ -28,21 +29,42 @@ const int      DUTY_MAX      = (1 << PUMP_PWM_RES) - 1;
 int precharge_ms = 220;     // pump build-up
 int puff_ms      = 50;      // valve open
 int guard_ms     = 350;     // eyelid recovery
-int duty_run     = 1000;     // pump strength (0..1023)
+int duty_run     = 1000;    // pump strength (0..1023)
 int duty_idle    = 0;       // 0 = fully off between puffs
 int ramp_time_ms = 60;      // quiet spin up/down
-int rest_min_ms  = 1000;    // min rest after puff
-int rest_max_ms  = 4000;    // max rest after puff
+
+// -------------------- WINK PPM scheduling
+const uint8_t  SEQ_FRAMES         = 16;
+const uint8_t  FRAME_SLOTS        = 4;
+const uint32_t SLOT_DURATION_MS   = 400;                 // 0.4 s slots
+const uint32_t FRAME_DURATION_MS  = SLOT_DURATION_MS * FRAME_SLOTS; // 1.6 s
+const uint32_t SEQUENCE_LEAD_MS   = 200;                 // small delay before first precharge
+
+struct SequenceEvent {
+  uint8_t  slot;
+  uint32_t prechargeAt;
+  uint32_t puffAt;
+  uint32_t recoverAt;
+  uint32_t guardDoneAt;
+};
+
+SequenceEvent sequenceEvents[SEQ_FRAMES];
+bool          sequenceActive  = false;
+uint8_t       sequenceIndex   = 0;
+uint32_t      sequenceStartMs = 0;
 
 // -------------------- Puff state machine
 enum PuffState { REST, PRECHARGE, PUFF, RECOVER };
 PuffState puffState = REST;
 uint32_t  stateStart = 0;
-uint32_t  restTarget = 0;
 
 // Forward declarations
 void enterState(PuffState s, uint32_t now);
 void updateRamp(uint32_t now);
+void handleSerialInput();
+void processCommand(const char* cmd);
+void startProgrammedSequence();
+void cancelSequence();
 
 // -------------------- Non-blocking ramp
 bool     rampActive = false;
@@ -76,6 +98,83 @@ void updateRamp(uint32_t now) {
   }
 }
 
+void cancelSequence() {
+  if (!sequenceActive) return;
+  sequenceActive = false;
+  sequenceIndex = 0;
+  sequenceStartMs = 0;
+  Serial.println("SEQ CANCEL");
+  enterState(REST, millis());
+}
+
+void startProgrammedSequence() {
+  if (sequenceActive) {
+    Serial.println("SEQ BUSY");
+    return;
+  }
+
+  uint32_t now = millis();
+  sequenceStartMs = now + SEQUENCE_LEAD_MS;
+
+  for (uint8_t i = 0; i < SEQ_FRAMES; i++) {
+    uint8_t slot = (uint8_t)random(0, FRAME_SLOTS);
+    uint32_t frameBase = sequenceStartMs + (uint32_t)i * FRAME_DURATION_MS;
+    uint32_t puffAt = frameBase + (uint32_t)slot * SLOT_DURATION_MS;
+    uint32_t prechargeAt = puffAt;
+    if (puffAt >= (uint32_t)precharge_ms) {
+      prechargeAt = puffAt - (uint32_t)precharge_ms;
+    }
+    if (prechargeAt < frameBase) {
+      prechargeAt = frameBase;
+    }
+    uint32_t recoverAt = puffAt + (uint32_t)puff_ms;
+    uint32_t guardDoneAt = recoverAt + (uint32_t)guard_ms;
+
+    sequenceEvents[i].slot = slot;
+    sequenceEvents[i].prechargeAt = prechargeAt;
+    sequenceEvents[i].puffAt = puffAt;
+    sequenceEvents[i].recoverAt = recoverAt;
+    sequenceEvents[i].guardDoneAt = guardDoneAt;
+  }
+
+  sequenceIndex = 0;
+  sequenceActive = true;
+  enterState(REST, now);
+
+  Serial.print("SEQ START slots=");
+  for (uint8_t i = 0; i < SEQ_FRAMES; i++) {
+    Serial.print(sequenceEvents[i].slot);
+    if (i + 1 < SEQ_FRAMES) Serial.print(',');
+  }
+  Serial.println();
+}
+
+void processCommand(const char* cmd) {
+  if (strcmp(cmd, "START") == 0) {
+    startProgrammedSequence();
+  } else if (strcmp(cmd, "STOP") == 0) {
+    cancelSequence();
+  }
+}
+
+void handleSerialInput() {
+  static char buffer[32];
+  static uint8_t len = 0;
+
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (len > 0) {
+        buffer[len] = '\0';
+        processCommand(buffer);
+        len = 0;
+      }
+    } else if (len < sizeof(buffer) - 1) {
+      buffer[len++] = c;
+    }
+  }
+}
+
 // -------------------- Valve helpers
 inline void valveOn()  { digitalWrite(V_BIN1, HIGH); digitalWrite(V_BIN2, LOW); }
 inline void valveOff() { digitalWrite(V_BIN1, LOW);  digitalWrite(V_BIN2, LOW); }
@@ -88,7 +187,6 @@ void enterState(PuffState s, uint32_t now) {
     case REST:
       startRamp(duty_run, duty_idle, ramp_time_ms);
       valveOff();
-      restTarget = now + (uint32_t)random(rest_min_ms, rest_max_ms);
       break;
     case PRECHARGE:
       startRamp(duty_idle, duty_run, ramp_time_ms);
@@ -151,6 +249,7 @@ void setup() {
 }
 
 void loop() {
+  handleSerialInput();
   uint32_t now = millis();
 
   // --- Fast sensor read
@@ -165,18 +264,44 @@ void loop() {
   updateRamp(now);
 
   // --- Puff state machine
+  SequenceEvent* current = (sequenceActive && sequenceIndex < SEQ_FRAMES) ? &sequenceEvents[sequenceIndex] : nullptr;
+
   switch (puffState) {
     case REST:
-      if ((int32_t)(now - restTarget) >= 0) enterState(PRECHARGE, now);
+      if (current && (int32_t)(now - current->prechargeAt) >= 0) {
+        enterState(PRECHARGE, now);
+      }
       break;
     case PRECHARGE:
-      if (now - stateStart >= (uint32_t)precharge_ms) enterState(PUFF, now);
+      if (!current) {
+        enterState(REST, now);
+      } else if ((int32_t)(now - current->puffAt) >= 0) {
+        enterState(PUFF, now);
+      }
       break;
     case PUFF:
-      if (now - stateStart >= (uint32_t)puff_ms) enterState(RECOVER, now);
+      if (!current) {
+        enterState(REST, now);
+      } else if ((int32_t)(now - current->recoverAt) >= 0) {
+        enterState(RECOVER, now);
+      }
       break;
     case RECOVER:
-      if (now - stateStart >= (uint32_t)guard_ms) enterState(REST, now);
+      if (!current) {
+        enterState(REST, now);
+      } else if ((int32_t)(now - current->guardDoneAt) >= 0) {
+        sequenceIndex++;
+        if (sequenceIndex >= SEQ_FRAMES) {
+          sequenceActive = false;
+          sequenceStartMs = 0;
+          sequenceIndex = 0;
+          Serial.println("SEQ END");
+          current = nullptr;
+        } else {
+          current = &sequenceEvents[sequenceIndex];
+        }
+        enterState(REST, now);
+      }
       break;
   }
 }

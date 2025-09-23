@@ -71,7 +71,11 @@ async function start() {
         buffer = buffer.slice(idx + 1);
         if (!line) continue;
         const parsed = parseLine(line);
-        if (parsed) broadcast({ type: 'sample', ...parsed });
+        if (parsed) {
+          broadcast({ type: 'sample', ...parsed });
+        } else if (/^SEQ/i.test(line) || /^ERR/i.test(line)) {
+          broadcast({ type: 'esp-log', text: line });
+        }
       }
       // Safety: avoid unbounded buffer
       if (buffer.length > 4096) buffer = buffer.slice(-2048);
@@ -80,6 +84,26 @@ async function start() {
 
   wss.on('connection', (ws) => {
     ws.send(JSON.stringify({ type: 'hello', baud: BAUD, serial: !!serial }));
+
+    ws.on('message', (raw) => {
+      const text = typeof raw === 'string' ? raw : raw.toString('utf8');
+      let msg;
+      try {
+        msg = JSON.parse(text);
+      } catch (err) {
+        console.warn('WS message parse error:', err.message);
+        return;
+      }
+      if (msg && msg.type === 'start-sequence') {
+        if (serial) {
+          serial.write('START\n', (err) => {
+            if (err) console.error('Serial write error:', err.message);
+          });
+        } else {
+          ws.send(JSON.stringify({ type: 'esp-log', text: 'ERR no-serial-port' }));
+        }
+      }
+    });
   });
 
   server.listen(HTTP_PORT, () => {
@@ -91,4 +115,3 @@ start().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-
