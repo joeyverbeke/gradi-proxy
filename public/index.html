@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESP Proximity Visualizer</title>
+    <style>
+      html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      #topbar {
+        display:flex; align-items:center; gap:12px; padding:10px 12px; border-bottom:1px solid #eee; position: sticky; top: 0; background:#fff; z-index: 2;
+      }
+      #threshold { width: 220px; }
+      #stats { color:#555; font-size: 14px; }
+      #canvas { position: relative; height: calc(100% - 54px); background: #f9fafb; overflow: hidden; }
+      .sq { position:absolute; width: 16px; height: 16px; background:#0ea5e9; opacity:0.9; border-radius:2px; box-shadow: 0 1px 2px rgba(0,0,0,0.15); }
+      .sq.alt { background:#10b981; }
+    </style>
+  </head>
+  <body>
+    <div id="topbar">
+      <label for="threshold">Threshold:</label>
+      <input id="threshold" type="range" min="0" max="175" value="50" />
+      <span id="thVal">50</span>
+      <span id="stats">t: –, prox: –</span>
+    </div>
+    <div id="canvas"></div>
+    <script src="/main.js"></script>
+  </body>
+  </html>
+
