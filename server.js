@@ -1,6 +1,7 @@
 // Minimal serial → WebSocket → frontend bridge
-// Env: SERIAL_PORT=/dev/tty.usbmodem... BAUD=115200 PORT=3000
+// Config: see .env for SERIAL_PORT, BAUD, PORT
 
+require('dotenv').config();
 const path = require('path');
 const express = require('express');
 const http = require('http');
@@ -9,7 +10,8 @@ const { SerialPort } = require('serialport');
 
 const HTTP_PORT = Number(process.env.PORT || 3007);
 const BAUD = Number(process.env.BAUD || 115200);
-const SERIAL_HINT = process.env.SERIAL_PORT || '';
+const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
+const SERIAL_HINT = serialEnv.startsWith('/') ? serialEnv : `/dev/${serialEnv}`;
 
 const app = express();
 const server = http.createServer(app);
@@ -49,7 +51,7 @@ async function pickSerialPort() {
 async function start() {
   const portPath = await pickSerialPort();
   if (!portPath) {
-    console.error('No serial ports found. Set SERIAL_PORT env to your device path.');
+    console.error('No serial ports found. Update SERIAL_PORT in .env to your device path.');
   } else {
     console.log(`Opening serial: ${portPath} @ ${BAUD}`);
   }
