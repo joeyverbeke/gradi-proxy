@@ -26,12 +26,83 @@ function broadcast(obj) {
   });
 }
 
-function parseLine(line) {
-  // Example: t=794125 ms | prox=11
-  // Return { t: number, prox: number } or null
+function parseSampleLine(line) {
   const m = line.match(/t=(\d+)\s*ms\s*\|\s*prox=(\d+)/i);
   if (!m) return null;
   return { t: Number(m[1]), prox: Number(m[2]) };
+}
+
+function parseKeyValueSegments(remainder) {
+  if (!remainder) return {};
+  const segments = remainder.split('|');
+  const data = {};
+  segments.forEach((seg) => {
+    const trimmed = seg.trim();
+    if (!trimmed) return;
+    const idx = trimmed.indexOf('=');
+    if (idx === -1) return;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (key) data[key] = value;
+  });
+  return data;
+}
+
+function parseBlinkLine(line) {
+  if (!line.startsWith('BLINK')) return null;
+  const data = parseKeyValueSegments(line.slice('BLINK'.length).trim());
+  if (!data.time_ms) return null;
+  const toNum = (key) => (key in data ? Number(data[key]) : undefined);
+  return {
+    time_ms: Number(data.time_ms),
+    prox: toNum('prox'),
+    mean: toNum('mean'),
+    sigma: toNum('sigma'),
+    zRise: toNum('zRise'),
+    zDrop: toNum('zDrop'),
+    polarity: data.polarity || null,
+    confidence: toNum('confidence'),
+    blinks: toNum('blinks'),
+    raw: line,
+  };
+}
+
+function parseStatusLine(line) {
+  if (!line.startsWith('STATUS')) return null;
+  const data = parseKeyValueSegments(line.slice('STATUS'.length).trim());
+  if (!data.time_ms) return null;
+  const toNum = (key) => (key in data ? Number(data[key]) : undefined);
+  const status = {
+    time_ms: Number(data.time_ms),
+    state: data.state || null,
+    prox: toNum('prox'),
+    confidence: toNum('confidence'),
+    blinks: toNum('blinks'),
+    raw: line,
+  };
+  if ('mean' in data) status.mean = Number(data.mean);
+  if ('sigma' in data) status.sigma = Number(data.sigma);
+  if ('zRise' in data) status.zRise = Number(data.zRise);
+  if ('zDrop' in data) status.zDrop = Number(data.zDrop);
+  return status;
+}
+
+function parseSequenceLine(line) {
+  const m = line.match(/^SEQ\s+(START|END|CANCEL)\b/i);
+  if (!m) return null;
+  const action = m[1].toUpperCase();
+  const remainder = line.slice(m[0].length).trim();
+  const data = parseKeyValueSegments(remainder);
+  const result = { action, raw: line };
+  if (data.time_ms) result.time_ms = Number(data.time_ms);
+  if (data.lead_ms) result.lead_ms = Number(data.lead_ms);
+  if (data.slots) {
+    result.slots = data.slots
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n));
+  }
+  return result;
 }
 
 async function pickSerialPort() {
@@ -72,10 +143,28 @@ async function start() {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         if (!line) continue;
-        const parsed = parseLine(line);
-        if (parsed) {
-          broadcast({ type: 'sample', ...parsed });
-        } else if (/^SEQ/i.test(line) || /^ERR/i.test(line)) {
+        const blink = parseBlinkLine(line);
+        if (blink) {
+          broadcast({ type: 'blink-event', ...blink });
+          continue;
+        }
+        const status = parseStatusLine(line);
+        if (status) {
+          broadcast({ type: 'status', ...status });
+          continue;
+        }
+        const seq = parseSequenceLine(line);
+        if (seq) {
+          broadcast({ type: 'sequence-log', ...seq });
+          broadcast({ type: 'esp-log', text: line });
+          continue;
+        }
+        const sample = parseSampleLine(line);
+        if (sample) {
+          broadcast({ type: 'sample', ...sample });
+          continue;
+        }
+        if (/^ERR/i.test(line)) {
           broadcast({ type: 'esp-log', text: line });
         }
       }

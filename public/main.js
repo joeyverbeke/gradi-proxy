@@ -130,16 +130,32 @@
     drawHead += barW;
   }
 
-  let threshold = Number(sliderTh.value);
   let intervalMs = Number(sliderIv.value);
-  let lastProx = null;
   let blinkFlag = false;
   let timelineTimer = null;
 
   let sequenceRunning = false;
   let sequenceCompleted = false;
-  let sequenceStartTime = null;
+  let sequenceStartTimeMs = null;
   let sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
+
+  let espNowMs = null;
+  let lastSampleProx = null;
+  let presenceState = 'IDLE';
+  let lastConfidence = 0;
+  let blinkTotal = 0;
+
+  sliderTh.disabled = true;
+  sliderTh.value = 0;
+  sliderTh.title = 'Blink detection handled on-device';
+  thVal.textContent = 'ESP';
+
+  function refreshStats() {
+    const tStr = espNowMs != null ? espNowMs : '-';
+    const proxStr = lastSampleProx != null ? lastSampleProx : '-';
+    const confText = Number.isFinite(lastConfidence) ? lastConfidence.toFixed(2) : '-';
+    stats.textContent = `t: ${tStr} ms, prox: ${proxStr}, state: ${presenceState}, conf: ${confText}`;
+  }
 
   function setSequenceStatus(text) {
     sequenceStatus.textContent = text;
@@ -197,11 +213,14 @@
 
   function updateFrameHighlights() {
     let elapsed = null;
-    if (sequenceRunning && sequenceStartTime != null) {
-      elapsed = performance.now() - sequenceStartTime;
-      if (elapsed >= TOTAL_FRAMES * FRAME_DURATION) {
-        completeSequence('time');
-        elapsed = null;
+    if (sequenceRunning && sequenceStartTimeMs != null && espNowMs != null) {
+      const delta = espNowMs - sequenceStartTimeMs;
+      if (delta >= 0) {
+        elapsed = delta;
+        if (elapsed >= TOTAL_FRAMES * FRAME_DURATION) {
+          completeSequence('time', { statusText: 'Sequence window elapsed' });
+          elapsed = null;
+        }
       }
     }
 
@@ -265,11 +284,6 @@
 
   startTimelineTimer();
 
-  sliderTh.addEventListener('input', () => {
-    threshold = Number(sliderTh.value);
-    thVal.textContent = String(threshold);
-  });
-
   sliderIv.addEventListener('input', () => {
     intervalMs = Number(sliderIv.value);
     intVal.textContent = String(intervalMs);
@@ -289,18 +303,24 @@
     }
   }
 
-  function completeSequence(reason) {
+  function completeSequence(reason, options = {}) {
     if (!sequenceRunning) return;
 
     sequenceRunning = false;
     sequenceCompleted = true;
-    sequenceStartTime = null;
+    sequenceStartTimeMs = null;
     startBtn.disabled = false;
     startBtn.textContent = 'Start Sequence';
-    setSequenceStatus('Sequence captured - ready for replay');
+    blinkFlag = false;
+    const statusText = options.statusText || 'Sequence captured - ready for replay';
+    setSequenceStatus(statusText);
 
-    const poeticMessage = generatePoeticThought(sequenceFrames);
-    messageOutput.textContent = poeticMessage;
+    if (options.messageText) {
+      messageOutput.textContent = options.messageText;
+    } else if (options.producePoem !== false) {
+      const poeticMessage = generatePoeticThought(sequenceFrames);
+      messageOutput.textContent = poeticMessage;
+    }
   }
 
   function beginSequence() {
@@ -311,9 +331,9 @@
     sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
     startBtn.disabled = true;
     startBtn.textContent = 'Running...';
-    setSequenceStatus('Sequence running - capture in progress');
-    sequenceStartTime = performance.now();
-    lastProx = null;
+    setSequenceStatus('Sequence running - awaiting ESP sync');
+    sequenceStartTimeMs = null;
+    blinkTotal = 0;
     blinkFlag = false;
     resetTimelineCanvas();
     clearFrameClasses();
@@ -323,9 +343,9 @@
   function resetInterface() {
     sequenceRunning = false;
     sequenceCompleted = false;
-    sequenceStartTime = null;
+    sequenceStartTimeMs = null;
     sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
-    lastProx = null;
+    blinkTotal = 0;
     blinkFlag = false;
     startBtn.disabled = false;
     startBtn.textContent = 'Start Sequence';
@@ -333,6 +353,7 @@
     messageOutput.textContent = 'Decoded message will bloom here.';
     clearFrameClasses();
     resetTimelineCanvas();
+    refreshStats();
   }
 
   startBtn.addEventListener('click', () => {
@@ -344,23 +365,111 @@
   });
 
   function handleSample(t, prox) {
-    stats.textContent = `t: ${t} ms, prox: ${prox}`;
-    if (lastProx == null) {
-      lastProx = prox;
-      return;
-    }
+    espNowMs = t;
+    lastSampleProx = prox;
+    refreshStats();
+  }
 
-    const wasBelow = lastProx < threshold;
-    const isAbove = prox >= threshold;
-    if (sequenceRunning && wasBelow && isAbove) {
-      blinkFlag = true;
-      if (sequenceStartTime == null) {
-        sequenceStartTime = performance.now();
-      }
-      const rel = performance.now() - sequenceStartTime;
-      registerBlink(rel);
+  function handleStatus(payload) {
+    if (typeof payload.time_ms === 'number') {
+      espNowMs = payload.time_ms;
     }
-    lastProx = prox;
+    if (typeof payload.prox === 'number') {
+      lastSampleProx = payload.prox;
+    }
+    if (typeof payload.confidence === 'number' && !Number.isNaN(payload.confidence)) {
+      lastConfidence = payload.confidence;
+    }
+    if (typeof payload.blinks === 'number' && !Number.isNaN(payload.blinks)) {
+      blinkTotal = payload.blinks;
+    }
+    if (payload.state) {
+      presenceState = payload.state;
+    }
+    refreshStats();
+    if (!sequenceRunning && !sequenceCompleted) {
+      if (presenceState === 'PRESENCE') {
+        const confText = Number.isFinite(lastConfidence) ? lastConfidence.toFixed(2) : '-';
+        setSequenceStatus(`Presence detected · conf ${confText}`);
+      } else {
+        setSequenceStatus('Idle - awaiting blinks');
+      }
+    }
+  }
+
+  function handleBlinkEvent(payload) {
+    if (typeof payload.time_ms === 'number') {
+      espNowMs = payload.time_ms;
+    }
+    if (typeof payload.prox === 'number') {
+      lastSampleProx = payload.prox;
+    }
+    if (typeof payload.confidence === 'number' && !Number.isNaN(payload.confidence)) {
+      lastConfidence = payload.confidence;
+    }
+    if (typeof payload.blinks === 'number' && !Number.isNaN(payload.blinks)) {
+      blinkTotal = payload.blinks;
+    } else {
+      blinkTotal += 1;
+    }
+    presenceState = 'PRESENCE';
+    refreshStats();
+    if (sequenceRunning && sequenceStartTimeMs != null && typeof payload.time_ms === 'number') {
+      const relativeMs = payload.time_ms - sequenceStartTimeMs;
+      if (relativeMs >= 0) {
+        registerBlink(relativeMs);
+        setSequenceStatus(`Sequence running - blinks ${blinkTotal}`);
+      }
+    }
+    blinkFlag = true;
+  }
+
+  function cancelSequenceUi(statusText, messageText) {
+    sequenceRunning = false;
+    sequenceCompleted = false;
+    sequenceStartTimeMs = null;
+    sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
+    blinkFlag = false;
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Sequence';
+    clearFrameClasses();
+    resetTimelineCanvas();
+    setSequenceStatus(statusText);
+    if (messageText) {
+      messageOutput.textContent = messageText;
+    }
+    refreshStats();
+  }
+
+  function handleSequenceLog(payload) {
+    const action = (payload.action || '').toUpperCase();
+    if (action === 'START') {
+      if (!sequenceRunning) {
+        sequenceRunning = true;
+        sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
+        startBtn.disabled = true;
+        startBtn.textContent = 'Running...';
+        messageOutput.textContent = 'Decoded message will bloom here.';
+        resetTimelineCanvas();
+        clearFrameClasses();
+      }
+      if (typeof payload.time_ms === 'number') {
+        sequenceStartTimeMs = payload.time_ms;
+      } else if (espNowMs != null) {
+        sequenceStartTimeMs = espNowMs;
+      }
+      sequenceCompleted = false;
+      blinkTotal = 0;
+      setSequenceStatus('Sequence running - pump engaged');
+    } else if (action === 'END') {
+      if (sequenceRunning) {
+        completeSequence('esp-end', {
+          statusText: 'Sequence ended on device',
+        });
+      }
+    } else if (action === 'CANCEL') {
+      cancelSequenceUi('Sequence cancelled by ESP', 'Sequence cancelled before completion.');
+    }
   }
 
   function connect() {
@@ -374,10 +483,24 @@
     ws.addEventListener('message', (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'sample') {
-          handleSample(msg.t, msg.prox);
-        } else if (msg.type === 'esp-log') {
-          console.log('[ESP]', msg.text);
+        switch (msg.type) {
+          case 'sample':
+            handleSample(msg.t, msg.prox);
+            break;
+          case 'blink-event':
+            handleBlinkEvent(msg);
+            break;
+          case 'status':
+            handleStatus(msg);
+            break;
+          case 'sequence-log':
+            handleSequenceLog(msg);
+            break;
+          case 'esp-log':
+            console.log('[ESP]', msg.text);
+            break;
+          default:
+            break;
         }
       } catch (err) {
         console.warn('Failed to parse message', err);
@@ -390,9 +513,9 @@
     });
   }
 
-  thVal.textContent = String(threshold);
   intVal.textContent = String(intervalMs);
   resetTimelineCanvas();
   setSequenceStatus('Idle - awaiting blinks');
+  refreshStats();
   connect();
 })();
