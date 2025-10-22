@@ -13,6 +13,24 @@ const BAUD = Number(process.env.BAUD || 115200);
 const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
 const SERIAL_HINT = serialEnv.startsWith('/') ? serialEnv : `/dev/${serialEnv}`;
 
+const CONTROL_CFG = {
+  confStart: Number.parseFloat(process.env.CONF_START_THRESHOLD ?? '') || 0.95,
+  confRearm: Number.parseFloat(process.env.CONF_REARM_THRESHOLD ?? '') || 0.8,
+  confExit: Number.parseFloat(process.env.CONF_EXIT_THRESHOLD ?? '') || 0.4,
+  proxExit: Number.isNaN(Number(process.env.PROX_EXIT_LEVEL)) ? 5 : Number(process.env.PROX_EXIT_LEVEL),
+  leaveMs: Number.isNaN(Number(process.env.LEAVE_HOLD_MS)) ? 1000 : Number(process.env.LEAVE_HOLD_MS),
+};
+
+const controlState = {
+  autoArmed: true,
+  sequenceActive: false,
+  startPending: false,
+  stopPending: false,
+  leaveCandidateSince: null,
+  lastStatus: null,
+  lastStart: null,
+};
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
@@ -24,6 +42,17 @@ function broadcast(obj) {
   wss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
+}
+
+function controlLog(event, info = {}) {
+  const payload = {
+    type: 'control-log',
+    event,
+    ts: Date.now(),
+    ...info,
+  };
+  console.log(`[CTRL] ${event}`, JSON.stringify(info));
+  broadcast(payload);
 }
 
 function parseSampleLine(line) {
@@ -102,7 +131,145 @@ function parseSequenceLine(line) {
       .map((s) => Number(s.trim()))
       .filter((n) => !Number.isNaN(n));
   }
+  if (data.reason) result.reason = data.reason;
   return result;
+}
+
+let serialPort = null;
+
+function requestStart(reason, extra = {}) {
+  if (!serialPort) {
+    controlLog('start-skipped', { reason: 'no-serial', requestedBy: reason, ...extra });
+    return false;
+  }
+  if (controlState.sequenceActive || controlState.startPending) {
+    return false;
+  }
+  controlState.startPending = true;
+  controlState.autoArmed = false;
+  controlState.lastStart = {
+    reason,
+    requestedAt: Date.now(),
+    ...extra,
+  };
+  controlLog('start-request', { reason, ...extra });
+  serialPort.write('START\n', (err) => {
+    if (err) {
+      controlLog('start-error', { reason, error: err.message });
+    }
+  });
+  return true;
+}
+
+function requestStop(reason, extra = {}) {
+  if (!serialPort) {
+    controlLog('stop-skipped', { reason: 'no-serial', requestedBy: reason, ...extra });
+    return false;
+  }
+  if (controlState.stopPending) {
+    return false;
+  }
+  controlState.stopPending = true;
+  controlLog('stop-request', { reason, ...extra });
+  serialPort.write('STOP\n', (err) => {
+    if (err) {
+      controlLog('stop-error', { reason, error: err.message });
+    }
+  });
+  return true;
+}
+
+function handleSequenceLog(seq) {
+  if (!seq || !seq.action) return;
+  const now = Date.now();
+  switch (seq.action) {
+    case 'START':
+      controlState.sequenceActive = true;
+      controlState.startPending = false;
+      controlState.stopPending = false;
+      controlState.leaveCandidateSince = null;
+      controlLog('sequence-started', {
+        time_ms: seq.time_ms,
+        reason: controlState.lastStart ? controlState.lastStart.reason : null,
+        queued: controlState.lastStart,
+        slots: seq.slots,
+      });
+      break;
+    case 'END':
+      controlState.sequenceActive = false;
+      controlState.stopPending = false;
+      controlState.leaveCandidateSince = null;
+      controlState.lastStart = null;
+      controlLog('sequence-ended', { time_ms: seq.time_ms, at: now });
+      break;
+    case 'CANCEL':
+      controlState.sequenceActive = false;
+      controlState.startPending = false;
+      controlState.stopPending = false;
+      controlState.leaveCandidateSince = null;
+      controlState.lastStart = null;
+      controlLog('sequence-cancelled', { time_ms: seq.time_ms, reason: seq.reason || null });
+      break;
+    default:
+      break;
+  }
+}
+
+function handleStatus(status) {
+  if (!status) return;
+  const now = Date.now();
+  controlState.lastStatus = status;
+
+  const confidence = typeof status.confidence === 'number' && !Number.isNaN(status.confidence)
+    ? status.confidence
+    : undefined;
+  const prox = typeof status.prox === 'number' && !Number.isNaN(status.prox) ? status.prox : undefined;
+
+  const runningOrPending = controlState.sequenceActive || controlState.startPending;
+
+  if (runningOrPending) {
+    if (!controlState.stopPending) {
+      const confidenceLow = confidence !== undefined && confidence <= CONTROL_CFG.confExit;
+      const proxLow = prox !== undefined && prox <= CONTROL_CFG.proxExit;
+      if (confidenceLow && proxLow) {
+        if (controlState.leaveCandidateSince == null) {
+          controlState.leaveCandidateSince = now;
+        } else if (now - controlState.leaveCandidateSince >= CONTROL_CFG.leaveMs) {
+          requestStop('person-left', { confidence, prox });
+        }
+      } else {
+        controlState.leaveCandidateSince = null;
+      }
+    } else {
+      controlState.leaveCandidateSince = null;
+    }
+    return;
+  }
+
+  controlState.leaveCandidateSince = null;
+
+  if (controlState.stopPending) {
+    return;
+  }
+
+  if (!controlState.autoArmed) {
+    if (status.state === 'IDLE') {
+      controlState.autoArmed = true;
+      controlLog('auto-rearm', { reason: 'state-idle' });
+    } else if (confidence !== undefined && confidence <= CONTROL_CFG.confRearm) {
+      controlState.autoArmed = true;
+      controlLog('auto-rearm', { reason: 'confidence-drop', confidence });
+    }
+  }
+
+  if (
+    controlState.autoArmed &&
+    status.state === 'PRESENCE' &&
+    confidence !== undefined &&
+    confidence >= CONTROL_CFG.confStart
+  ) {
+    requestStart('auto-confidence', { confidence, time_ms: status.time_ms });
+  }
 }
 
 async function pickSerialPort() {
@@ -131,9 +298,17 @@ async function start() {
   let buffer = '';
   if (portPath) {
     serial = new SerialPort({ path: portPath, baudRate: BAUD });
+    serialPort = serial;
+    controlLog('serial-open', { port: portPath, baud: BAUD });
 
     serial.on('error', (err) => {
       console.error('Serial error:', err.message);
+      controlLog('serial-error', { error: err.message });
+    });
+
+    serial.on('close', () => {
+      controlLog('serial-close', {});
+      serialPort = null;
     });
 
     serial.on('data', (chunk) => {
@@ -150,11 +325,13 @@ async function start() {
         }
         const status = parseStatusLine(line);
         if (status) {
+          handleStatus(status);
           broadcast({ type: 'status', ...status });
           continue;
         }
         const seq = parseSequenceLine(line);
         if (seq) {
+          handleSequenceLog(seq);
           broadcast({ type: 'sequence-log', ...seq });
           broadcast({ type: 'esp-log', text: line });
           continue;
@@ -174,7 +351,7 @@ async function start() {
   }
 
   wss.on('connection', (ws) => {
-    ws.send(JSON.stringify({ type: 'hello', baud: BAUD, serial: !!serial }));
+    ws.send(JSON.stringify({ type: 'hello', baud: BAUD, serial: !!serialPort }));
 
     ws.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : raw.toString('utf8');
@@ -185,14 +362,20 @@ async function start() {
         console.warn('WS message parse error:', err.message);
         return;
       }
-      if (msg && msg.type === 'start-sequence') {
-        if (serial) {
-          serial.write('START\n', (err) => {
-            if (err) console.error('Serial write error:', err.message);
-          });
-        } else {
-          ws.send(JSON.stringify({ type: 'esp-log', text: 'ERR no-serial-port' }));
-        }
+      if (!msg || !msg.type) return;
+      switch (msg.type) {
+        case 'start-sequence':
+          if (!requestStart('manual-ui', { from: 'ws' })) {
+            ws.send(JSON.stringify({ type: 'esp-log', text: 'INFO start request ignored (busy or unavailable)' }));
+          }
+          break;
+        case 'stop-sequence':
+          if (!requestStop('manual-ui', { from: 'ws' })) {
+            ws.send(JSON.stringify({ type: 'esp-log', text: 'INFO stop request ignored (not running)' }));
+          }
+          break;
+        default:
+          break;
       }
     });
   });
@@ -201,6 +384,8 @@ async function start() {
     console.log(`HTTP: http://localhost:${HTTP_PORT}`);
   });
 }
+
+controlLog('controller-init', { config: CONTROL_CFG });
 
 start().catch((e) => {
   console.error(e);
