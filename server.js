@@ -19,6 +19,7 @@ const CONTROL_CFG = {
   confExit: Number.parseFloat(process.env.CONF_EXIT_THRESHOLD ?? '') || 0.4,
   proxExit: Number.isNaN(Number(process.env.PROX_EXIT_LEVEL)) ? 5 : Number(process.env.PROX_EXIT_LEVEL),
   leaveMs: Number.isNaN(Number(process.env.LEAVE_HOLD_MS)) ? 1000 : Number(process.env.LEAVE_HOLD_MS),
+  startDelay: Number.isNaN(Number(process.env.START_DELAY_MS)) ? 600 : Number(process.env.START_DELAY_MS),
 };
 
 const controlState = {
@@ -29,6 +30,7 @@ const controlState = {
   leaveCandidateSince: null,
   lastStatus: null,
   lastStart: null,
+  startTimer: null,
 };
 
 const app = express();
@@ -137,6 +139,13 @@ function parseSequenceLine(line) {
 
 let serialPort = null;
 
+function clearStartTimer() {
+  if (controlState.startTimer) {
+    clearTimeout(controlState.startTimer);
+    controlState.startTimer = null;
+  }
+}
+
 function requestStart(reason, extra = {}) {
   if (!serialPort) {
     controlLog('start-skipped', { reason: 'no-serial', requestedBy: reason, ...extra });
@@ -152,12 +161,18 @@ function requestStart(reason, extra = {}) {
     requestedAt: Date.now(),
     ...extra,
   };
-  controlLog('start-request', { reason, ...extra });
-  serialPort.write('START\n', (err) => {
-    if (err) {
-      controlLog('start-error', { reason, error: err.message });
-    }
-  });
+  clearStartTimer();
+  controlLog('start-request', { reason, delayMs: CONTROL_CFG.startDelay, ...extra });
+  const delay = Math.max(0, CONTROL_CFG.startDelay);
+  controlState.startTimer = setTimeout(() => {
+    controlState.startTimer = null;
+    controlLog('start-dispatch', { reason, delayMs: delay, ...extra });
+    serialPort.write('START\n', (err) => {
+      if (err) {
+        controlLog('start-error', { reason, error: err.message });
+      }
+    });
+  }, delay);
   return true;
 }
 
@@ -169,6 +184,7 @@ function requestStop(reason, extra = {}) {
   if (controlState.stopPending) {
     return false;
   }
+  clearStartTimer();
   controlState.stopPending = true;
   controlLog('stop-request', { reason, ...extra });
   serialPort.write('STOP\n', (err) => {
@@ -188,6 +204,7 @@ function handleSequenceLog(seq) {
       controlState.startPending = false;
       controlState.stopPending = false;
       controlState.leaveCandidateSince = null;
+      clearStartTimer();
       controlLog('sequence-started', {
         time_ms: seq.time_ms,
         reason: controlState.lastStart ? controlState.lastStart.reason : null,
@@ -199,6 +216,7 @@ function handleSequenceLog(seq) {
       controlState.sequenceActive = false;
       controlState.stopPending = false;
       controlState.leaveCandidateSince = null;
+      clearStartTimer();
       controlState.lastStart = null;
       controlLog('sequence-ended', { time_ms: seq.time_ms, at: now });
       break;
@@ -208,6 +226,7 @@ function handleSequenceLog(seq) {
       controlState.stopPending = false;
       controlState.leaveCandidateSince = null;
       controlState.lastStart = null;
+      clearStartTimer();
       controlLog('sequence-cancelled', { time_ms: seq.time_ms, reason: seq.reason || null });
       break;
     default:
@@ -309,6 +328,7 @@ async function start() {
     serial.on('close', () => {
       controlLog('serial-close', {});
       serialPort = null;
+      clearStartTimer();
     });
 
     serial.on('data', (chunk) => {

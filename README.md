@@ -34,6 +34,8 @@ npm start
 
 Open `http://localhost:3007` in a browser to load the dashboard. The UI auto-connects to `/ws`, streams proximity data, and mirrors controller state. Manual start/stop buttons emit JSON messages that route back through the Node controller, so manual and auto control share the same path.
 
+For engineering diagnostics, the legacy dashboard remains available at `http://localhost:3007/debug/`.
+
 Auto Control Overview
 ---------------------
 
@@ -55,6 +57,7 @@ Thresholds live in environment variables (defaults in `.env.example`):
 | `CONF_EXIT_THRESHOLD` | 0.40 | Combined with low proximity triggers auto-cancel |
 | `PROX_EXIT_LEVEL` | 5 | Proximity count considered “no wearer” |
 | `LEAVE_HOLD_MS` | 1000 | Dwell time before auto-cancelling |
+| `START_DELAY_MS` | 600 | Delay between auto-accept and issuing `START` |
 
 Controller logs (`[CTRL] …`) appear in the Node terminal and are mirrored to the frontend as `control-log` messages so you can audit every START/STOP decision.
 
