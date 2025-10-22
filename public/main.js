@@ -17,8 +17,14 @@ const SEGMENT_COUNT = 4;
 const FRAME_DURATION = SLOT_DURATION * FRAME_SLOTS;
 const TOTAL_FRAMES = 16;
 const TYPING_INTERVAL_MS = 35;
+const FLASH_DURATION_MS = 220;
+const DEFAULT_LEAVE_HOLD_MS = 1000;
 
 const messageEl = document.getElementById('message');
+const bodyEl = document.body;
+const debugPanelEl = document.getElementById('debug-panel');
+const debugStatsEl = document.getElementById('debug-stats');
+const debugStatusEl = document.getElementById('debug-status');
 let displayState = State.IDLE;
 let ws = null;
 
@@ -42,6 +48,11 @@ let glitchAppended = false;
 let blinkCount = 0;
 let lastBlinkTotal = null;
 let sequenceBlinkBase = null;
+let flashTimer = null;
+let leaveHoldMs = DEFAULT_LEAVE_HOLD_MS;
+let idleHoldTimer = null;
+let debugEnabled = false;
+let lastProx = null;
 
 const INTROS = [
   'The walls are breathing in reverse and I am learning to count backwards.',
@@ -116,18 +127,83 @@ function resetSequenceState() {
   blinkCount = 0;
   sequenceBlinkBase = null;
   resetTypewriter();
+  if (bodyEl) {
+    bodyEl.classList.remove('flash');
+  }
+  updateDebugStats();
+}
+
+function clearIdleHold() {
+  if (idleHoldTimer) {
+    clearTimeout(idleHoldTimer);
+    idleHoldTimer = null;
+  }
+}
+
+function scheduleIdleHold(delayMs) {
+  const ms = Math.max(0, Number.isFinite(delayMs) ? delayMs : leaveHoldMs);
+  if (idleHoldTimer) {
+    clearTimeout(idleHoldTimer);
+  }
+  idleHoldTimer = setTimeout(() => {
+    idleHoldTimer = null;
+    enterIdle();
+  }, ms);
+}
+
+function setDebugEnabled(enabled) {
+  debugEnabled = Boolean(enabled);
+  if (!debugPanelEl) return;
+  debugPanelEl.classList.toggle('visible', debugEnabled);
+  if (debugEnabled) {
+    updateDebugStats();
+    updateDebugStatus('Debug monitoring enabled');
+  } else if (debugStatusEl) {
+    debugStatusEl.textContent = '';
+  }
+}
+
+function formatMetric(value, options = {}) {
+  if (value == null || Number.isNaN(value)) return '-';
+  if (typeof value === 'number') {
+    if (options.fixed != null) {
+      return value.toFixed(options.fixed);
+    }
+    return String(value);
+  }
+  return String(value);
+}
+
+function updateDebugStats() {
+  if (!debugEnabled || !debugStatsEl) return;
+  const msStr = formatMetric(lastFirmwareMs, {});
+  const proxStr = formatMetric(lastProx, {});
+  const confStr = formatMetric(confidence, { fixed: 2 });
+  const blinkStr = formatMetric(lastBlinkTotal, {});
+  const stateStr = presence || 'IDLE';
+  const queueStr = `${typewriterQueue.length}`;
+  const typingStr = typeTimer ? 'typing' : 'paused';
+  debugStatsEl.textContent = `t ${msStr} ms · prox ${proxStr} · state ${stateStr} · conf ${confStr} · blinks ${blinkStr} · queue ${queueStr} · type ${typingStr}`;
+}
+
+function updateDebugStatus(text) {
+  if (!debugEnabled || !debugStatusEl) return;
+  debugStatusEl.textContent = text;
 }
 
 function enterIdle() {
+  clearIdleHold();
   stopEllipsis();
   stopTypewriter();
   displayState = State.IDLE;
   setMessage('');
   resetSequenceState();
+  updateDebugStatus('Idle · awaiting host');
 }
 
 function enterAssessing() {
   if (displayState === State.ASSESSING) return;
+  clearIdleHold();
   stopEllipsis();
   stopTypewriter();
   displayState = State.ASSESSING;
@@ -138,22 +214,30 @@ function enterAssessing() {
     dots = dots.length >= 3 ? '' : `${dots}.`;
     setMessage(`${base}${dots}`);
   }, 420);
+  updateDebugStatus('Assessing host');
+  updateDebugStats();
 }
 
 function enterAccepted() {
   if (displayState === State.ACCEPTED) return;
+  clearIdleHold();
   stopEllipsis();
   stopTypewriter();
   displayState = State.ACCEPTED;
   setMessage('host accepted.');
+  updateDebugStatus('Host accepted');
+  updateDebugStats();
 }
 
 function enterRunning() {
   if (displayState === State.RUNNING) return;
+  clearIdleHold();
   stopEllipsis();
   resetTypewriter();
   displayState = State.RUNNING;
   setMessage('');
+  updateDebugStatus('Sequence running');
+  updateDebugStats();
 }
 
 function startNextChunk() {
@@ -188,10 +272,28 @@ function startNextChunk() {
 
 function enqueueText(text) {
   if (!text) return;
+  clearIdleHold();
   typewriterQueue.push(text);
   if (!typeTimer) {
     startNextChunk();
   }
+}
+
+function flashScreen() {
+  if (!bodyEl) return;
+  bodyEl.classList.remove('flash');
+  // Force reflow so successive flashes retrigger animation
+  void bodyEl.offsetWidth;
+  bodyEl.classList.add('flash');
+  if (flashTimer) {
+    clearTimeout(flashTimer);
+  }
+  flashTimer = setTimeout(() => {
+    if (bodyEl) {
+      bodyEl.classList.remove('flash');
+    }
+    flashTimer = null;
+  }, FLASH_DURATION_MS);
 }
 
 function tallySlots(values) {
@@ -225,7 +327,6 @@ function getGroupValues(groupIdx, options = {}) {
   const { allowFallback = false } = options;
   const values = [];
   let missing = false;
-  let usedFallback = false;
   for (let offset = 0; offset < FRAME_SLOTS; offset += 1) {
     const frameIdx = groupIdx * FRAME_SLOTS + offset;
     let val = sequenceFrames[frameIdx];
@@ -233,7 +334,6 @@ function getGroupValues(groupIdx, options = {}) {
       const fallback = Number(plannedSlots[frameIdx]);
       if (Number.isFinite(fallback)) {
         val = fallback;
-        usedFallback = true;
       } else {
         val = null;
       }
@@ -245,7 +345,7 @@ function getGroupValues(groupIdx, options = {}) {
       values.push(Number(val));
     }
   }
-  return { values, missing, usedFallback };
+  return { values, missing };
 }
 
 function decodeSegment(groupIdx, options = {}) {
@@ -336,6 +436,8 @@ function finalizeSegments() {
   sequenceCompleted = true;
   processSegments({ allowFallback: true, allowPartial: true });
   appendGlitchNoteIfNeeded();
+  updateDebugStatus('Sequence finalized');
+  updateDebugStats();
 }
 
 function registerBlink(relativeMs) {
@@ -347,6 +449,7 @@ function registerBlink(relativeMs) {
 }
 
 function startSequence(startFirmwareMs, slots) {
+  clearIdleHold();
   sequenceRunning = true;
   sequenceCompleted = false;
   sequenceFrames = new Array(TOTAL_FRAMES).fill(null);
@@ -368,6 +471,8 @@ function startSequence(startFirmwareMs, slots) {
   if (sequenceStartTimeMs != null) {
     lastFirmwareMs = sequenceStartTimeMs;
   }
+  updateDebugStatus('Sequence started');
+  updateDebugStats();
 }
 
 function endSequence() {
@@ -377,6 +482,7 @@ function endSequence() {
 
 function cancelSequence() {
   resetSequenceState();
+  updateDebugStatus('Sequence cancelled');
 }
 
 function handleControlLog(log) {
@@ -384,40 +490,76 @@ function handleControlLog(log) {
   switch (log.event) {
     case 'start-request':
       enterAccepted();
+      updateDebugStatus('[CTRL] start-request');
       break;
     case 'start-dispatch':
       enterRunning();
+      updateDebugStatus('[CTRL] start-dispatch');
       break;
     case 'sequence-started':
       if (displayState !== State.ACCEPTED) {
         enterRunning();
       }
+      updateDebugStatus('[CTRL] sequence-started');
       break;
     case 'sequence-ended':
       finalizeSegments();
+      updateDebugStatus('[CTRL] sequence-ended');
       break;
     case 'sequence-cancelled':
     case 'stop-request':
       enterIdle();
+      updateDebugStatus(`[CTRL] ${log.event}`);
       break;
     case 'auto-rearm':
       if (presence !== 'PRESENCE') {
-        enterIdle();
+        if (displayState === State.IDLE) {
+          enterIdle();
+        } else if (!idleHoldTimer && !typeTimer && typewriterQueue.length === 0) {
+          scheduleIdleHold();
+        }
       }
+      updateDebugStatus('[CTRL] auto-rearm');
+      break;
+    case 'controller-init':
+      if (log.config && log.config.leaveMs != null) {
+        const configuredHold = Number(log.config.leaveMs);
+        if (!Number.isNaN(configuredHold) && configuredHold >= 0) {
+          leaveHoldMs = configuredHold;
+          if (idleHoldTimer) {
+            scheduleIdleHold();
+          }
+        }
+      }
+      if (typeof log.debug === 'boolean') {
+        setDebugEnabled(log.debug);
+      }
+      updateDebugStatus('[CTRL] controller-init');
       break;
     default:
       break;
   }
+  updateDebugStats();
 }
 
 function handleStatus(status) {
   if (!status) return;
   const prevBlinkCount = blinkCount;
+  const prevPresence = presence;
   if (typeof status.time_ms === 'number') {
     lastFirmwareMs = status.time_ms;
   }
   if (typeof status.confidence === 'number') confidence = status.confidence;
+  if (typeof status.prox === 'number' && !Number.isNaN(status.prox)) {
+    lastProx = status.prox;
+  }
   if (status.state) presence = status.state;
+  if (status.state && status.state !== 'IDLE') {
+    clearIdleHold();
+  }
+  if (presence !== prevPresence) {
+    updateDebugStatus(`Presence → ${presence}`);
+  }
 
   if (typeof status.blinks === 'number' && !Number.isNaN(status.blinks)) {
     lastBlinkTotal = status.blinks;
@@ -434,13 +576,24 @@ function handleStatus(status) {
     enterAssessing();
   }
 
-  if (presence === 'IDLE') {
-    enterIdle();
+  const typingActive = Boolean(typeTimer);
+  const shouldResetForIdle = (
+    presence === 'IDLE' &&
+    !sequenceRunning &&
+    !typingActive &&
+    typewriterQueue.length === 0
+  );
+
+  if (shouldResetForIdle) {
+    if (!idleHoldTimer) {
+      scheduleIdleHold();
+    }
   }
 
   if (sequenceRunning && blinkCount !== prevBlinkCount) {
     updateProgressSegments();
   }
+  updateDebugStats();
 }
 
 function handleSequenceLog(log) {
@@ -451,13 +604,16 @@ function handleSequenceLog(log) {
         typeof log.time_ms === 'number' ? log.time_ms : null,
         Array.isArray(log.slots) ? log.slots : null,
       );
+      updateDebugStatus('[SEQ] START');
       break;
     case 'END':
       endSequence();
+      updateDebugStatus('[SEQ] END');
       break;
     case 'CANCEL':
       cancelSequence();
       enterIdle();
+      updateDebugStatus('[SEQ] CANCEL');
       break;
     default:
       break;
@@ -468,9 +624,26 @@ function handleSample() {
   // raw samples unused in production view
 }
 
+function handleEspRaw(msg) {
+  if (!debugEnabled) return;
+  if (!msg) return;
+  const line = typeof msg.line === 'string' ? msg.line.trim() : '';
+  if (!line) return;
+  console.log('[ESP]', line);
+  const kind = typeof msg.kind === 'string' ? msg.kind.toUpperCase() : 'RAW';
+  if (kind === 'STATUS') {
+    return;
+  }
+  updateDebugStatus(`${kind}: ${line}`);
+}
+
 function handleBlinkEvent(evt) {
   if (!evt || !sequenceRunning) return;
   const prevBlinkCount = blinkCount;
+  flashScreen();
+  if (typeof evt.prox === 'number' && !Number.isNaN(evt.prox)) {
+    lastProx = evt.prox;
+  }
   if (typeof evt.time_ms === 'number') {
     lastFirmwareMs = evt.time_ms;
     if (sequenceStartTimeMs == null) {
@@ -492,6 +665,8 @@ function handleBlinkEvent(evt) {
     if (blinkCount !== prevBlinkCount) {
       updateProgressSegments();
     }
+    updateDebugStats();
+    updateDebugStatus(`Blink ${blinkCount} · awaiting reference`);
     return;
   }
   const relative = evt.time_ms - sequenceStartTimeMs;
@@ -499,12 +674,16 @@ function handleBlinkEvent(evt) {
     if (blinkCount !== prevBlinkCount) {
       updateProgressSegments();
     }
+    updateDebugStats();
+    updateDebugStatus(`Blink ${blinkCount} · early by ${relative} ms`);
     return;
   }
   registerBlink(relative);
   if (blinkCount !== prevBlinkCount) {
     updateProgressSegments();
   }
+  updateDebugStats();
+  updateDebugStatus(`Blink ${blinkCount} @ ${relative} ms`);
 }
 
 function connect() {
@@ -513,6 +692,19 @@ function connect() {
     try {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
+        case 'hello': {
+          if (msg.control && msg.control.leaveMs != null) {
+            const configuredHold = Number(msg.control.leaveMs);
+            if (!Number.isNaN(configuredHold) && configuredHold >= 0) {
+              leaveHoldMs = configuredHold;
+              if (idleHoldTimer) {
+                scheduleIdleHold();
+              }
+            }
+          }
+          setDebugEnabled(Boolean(msg.debug));
+          break;
+        }
         case 'sample':
           handleSample(msg);
           break;
@@ -527,6 +719,9 @@ function connect() {
           break;
         case 'control-log':
           handleControlLog(msg);
+          break;
+        case 'esp-raw':
+          handleEspRaw(msg);
           break;
         default:
           break;

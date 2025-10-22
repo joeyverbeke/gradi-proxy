@@ -8,6 +8,13 @@ const http = require('http');
 const WebSocket = require('ws');
 const { SerialPort } = require('serialport');
 
+const argv = process.argv.slice(2);
+const DEBUG_MODE = argv.includes('--debug');
+
+if (DEBUG_MODE) {
+  console.log('[DEBUG] Raw ESP logging enabled');
+}
+
 const HTTP_PORT = Number(process.env.PORT || 3007);
 const BAUD = Number(process.env.BAUD || 115200);
 const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
@@ -43,6 +50,25 @@ function broadcast(obj) {
   const msg = JSON.stringify(obj);
   wss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
+function detectLineKind(line) {
+  if (line.startsWith('STATUS')) return 'STATUS';
+  if (line.startsWith('BLINK')) return 'BLINK';
+  if (line.startsWith('SEQ')) return 'SEQ';
+  if (line.startsWith('ERR')) return 'ERR';
+  if (line.startsWith('SAMPLE')) return 'SAMPLE';
+  return 'RAW';
+}
+
+function broadcastDebugLine(line) {
+  if (!DEBUG_MODE) return;
+  broadcast({
+    type: 'esp-raw',
+    ts: Date.now(),
+    kind: detectLineKind(line),
+    line,
   });
 }
 
@@ -338,6 +364,7 @@ async function start() {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         if (!line) continue;
+        broadcastDebugLine(line);
         const blink = parseBlinkLine(line);
         if (blink) {
           broadcast({ type: 'blink-event', ...blink });
@@ -371,7 +398,13 @@ async function start() {
   }
 
   wss.on('connection', (ws) => {
-    ws.send(JSON.stringify({ type: 'hello', baud: BAUD, serial: !!serialPort }));
+    ws.send(JSON.stringify({
+      type: 'hello',
+      baud: BAUD,
+      serial: !!serialPort,
+      control: CONTROL_CFG,
+      debug: DEBUG_MODE,
+    }));
 
     ws.on('message', (raw) => {
       const text = typeof raw === 'string' ? raw : raw.toString('utf8');
@@ -405,7 +438,7 @@ async function start() {
   });
 }
 
-controlLog('controller-init', { config: CONTROL_CFG });
+controlLog('controller-init', { config: CONTROL_CFG, debug: DEBUG_MODE });
 
 start().catch((e) => {
   console.error(e);
