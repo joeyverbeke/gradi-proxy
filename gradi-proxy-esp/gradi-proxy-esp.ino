@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <Adafruit_VCNL4040.h>
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 Adafruit_VCNL4040 vcnl4040;
@@ -63,7 +64,12 @@ const uint16_t MIN_SAMPLES    = 120;
 const float    SLOPE_TAU_SEC  = 0.3f;
 const float    ALPHA_SLOPE    = DT_SEC / SLOPE_TAU_SEC;
 const float    SLOPE_MAX      = 0.20f;
-const float    CONF_REQUIRED  = 0.70f;
+const float    CONF_REQUIRED       = 0.90f;
+const float    CONF_READY_SIGMA_MAX   = 2.2f;
+const float    CONF_RESEED_THRESHOLD  = 0.55f;
+const float    SIGMA_RESEED_THRESHOLD = 4.0f;
+const float    SLOPE_RESEED_MAX       = 0.015f;
+const float    SIGMA_RESEED_SEED      = 1.6f;
 
 // -------------------- VCNL4040 PS configuration for detection
 const VCNL4040_ProximityIntegration PS_INT  = VCNL4040_PROXIMITY_INTEGRATION_TIME_1T;
@@ -121,6 +127,10 @@ int8_t   devPolarity   = 0;  // +1 rise, -1 drop, 0 none
 bool     beyondZ       = false;
 uint32_t crossStartMs  = 0;
 
+bool     captureMode   = false;
+bool     blinkReady    = false;
+bool     baselineReseeded = false;
+
 // -------------------- Fast sensor print throttling
 uint32_t lastPrint = 0;
 const uint32_t printIntervalMs = 10;  // print every 10 ms
@@ -138,9 +148,11 @@ void handleBlinkDetection(uint32_t now, uint16_t prox);
 void resetStatsAndConfidence(uint32_t now);
 void updateStats(uint16_t sample);
 float currentSigma(bool floored);
+void reseedBaseline(uint16_t prox);
 void updateConfidence(uint32_t now);
 void emitStatus(uint32_t now);
 void emitBlinkEvent(uint32_t now, uint16_t prox, float sigma, float zRise, float zDrop, int8_t polarity);
+void emitCaptureSnapshot(uint32_t now, const char* stage, uint16_t prox, float sigma, float zRise, float zDrop, float dev, bool enterAny);
 
 // -------------------- Utility helpers
 static inline float clamp01(float x) {
@@ -162,6 +174,8 @@ void resetStatsAndConfidence(uint32_t now) {
   crossStartMs = 0;
   refractoryUntilMs = 0;
   presenceEnterMs = now;
+  blinkReady = false;
+  baselineReseeded = false;
 }
 
 void updateStats(uint16_t x) {
@@ -185,6 +199,19 @@ float currentSigma(bool floored) {
   float sigma = sqrtf(var);
   if (floored && sigma < MIN_SIGMA_FLOOR) sigma = MIN_SIGMA_FLOOR;
   return sigma;
+}
+
+void reseedBaseline(uint16_t prox) {
+  statsInit = true;
+  mean_ps = (float)prox;
+  float seedSigma = SIGMA_RESEED_SEED;
+  if (seedSigma < MIN_SIGMA_FLOOR) seedSigma = MIN_SIGMA_FLOOR;
+  m2_ps = mean_ps * mean_ps + seedSigma * seedSigma;
+  prev_mean_ps = mean_ps;
+  slopeAbsEwma = 0.0f;
+  beyondZ = false;
+  devPolarity = 0;
+  crossStartMs = 0;
 }
 
 void updateConfidence(uint32_t now) {
@@ -246,28 +273,102 @@ void emitBlinkEvent(uint32_t now, uint16_t prox, float sigma, float zRise, float
   Serial.println(blinkCount);
 }
 
+void emitCaptureSnapshot(uint32_t now, const char* stage, uint16_t prox, float sigma, float zRise, float zDrop, float dev, bool enterAny) {
+  if (!captureMode) return;
+  Serial.print("DBG time_ms=");
+  Serial.print(now);
+  Serial.print(" | stage=");
+  Serial.print(stage);
+  Serial.print(" | prox=");
+  Serial.print(prox);
+  Serial.print(" | conf=");
+  Serial.print(conf, 3);
+  Serial.print(" | sigma=");
+  Serial.print(sigma, 3);
+  Serial.print(" | zRise=");
+  Serial.print(zRise, 3);
+  Serial.print(" | zDrop=");
+  Serial.print(zDrop, 3);
+  Serial.print(" | dev=");
+  Serial.print(dev, 1);
+  Serial.print(" | slope=");
+  Serial.print(slopeAbsEwma, 4);
+  Serial.print(" | mean=");
+  Serial.print((int)mean_ps);
+  Serial.print(" | beyond=");
+  Serial.print(beyondZ ? 1 : 0);
+  Serial.print(" | polarity=");
+  Serial.print(devPolarity);
+  Serial.print(" | cross_ms=");
+  if (beyondZ && crossStartMs <= now) {
+    Serial.print((int32_t)(now - crossStartMs));
+  } else {
+    Serial.print(0);
+  }
+  Serial.print(" | refractory=");
+  if (refractoryUntilMs > now) {
+    Serial.print((int32_t)(refractoryUntilMs - now));
+  } else {
+    Serial.print(0);
+  }
+  Serial.print(" | enter=");
+  Serial.print(enterAny ? 1 : 0);
+  Serial.print(" | blinkCount=");
+  Serial.println(blinkCount);
+}
+
 void handleBlinkDetection(uint32_t now, uint16_t prox) {
   updateStats(prox);
   sampleCount++;
   updateConfidence(now);
 
-  if (conf < CONF_REQUIRED) return;
-
   float sigma = currentSigma(true);
   float dev   = (float)prox - mean_ps;
   float zRise = sigma > 0.0f ? (dev / sigma) : 0.0f;
   float zDrop = -zRise;
+  bool stableSlope = (slopeAbsEwma <= SLOPE_RESEED_MAX);
 
-  if ((int32_t)(now - refractoryUntilMs) < 0) {
-    beyondZ = false;
-    devPolarity = 0;
-    crossStartMs = 0;
-    return;
+  if (!baselineReseeded &&
+      conf >= CONF_RESEED_THRESHOLD &&
+      sigma > SIGMA_RESEED_THRESHOLD &&
+      stableSlope) {
+    reseedBaseline(prox);
+    baselineReseeded = true;
+    sigma = currentSigma(true);
+    dev   = (float)prox - mean_ps;
+    zRise = sigma > 0.0f ? (dev / sigma) : 0.0f;
+    zDrop = -zRise;
   }
 
   bool enterRise = (zRise >= Z_ENTER);
   bool enterDrop = (zDrop >= Z_ENTER);
   bool enterAny  = enterRise || enterDrop;
+  const char* stage = "SEARCH";
+
+  if (conf >= CONF_REQUIRED && sigma <= CONF_READY_SIGMA_MAX) {
+    blinkReady = true;
+  }
+
+  if (conf < CONF_REQUIRED) {
+    stage = "BLOCK_CONF";
+    emitCaptureSnapshot(now, stage, prox, sigma, zRise, zDrop, dev, enterAny);
+    return;
+  }
+
+  if (!blinkReady) {
+    stage = "BLOCK_READY";
+    emitCaptureSnapshot(now, stage, prox, sigma, zRise, zDrop, dev, enterAny);
+    return;
+  }
+
+  if ((int32_t)(now - refractoryUntilMs) < 0) {
+    beyondZ = false;
+    devPolarity = 0;
+    crossStartMs = 0;
+    stage = "BLOCK_REFRACT";
+    emitCaptureSnapshot(now, stage, prox, sigma, zRise, zDrop, dev, enterAny);
+    return;
+  }
 
   bool exitRise = (zRise <= Z_EXIT);
   bool exitDrop = (zDrop <= Z_EXIT);
@@ -278,6 +379,7 @@ void handleBlinkDetection(uint32_t now, uint16_t prox) {
       beyondZ = true;
       devPolarity = curPol;
       crossStartMs = now;
+      stage = "ENTER";
     } else {
       if (curPol != devPolarity) {
         devPolarity = curPol;
@@ -290,7 +392,11 @@ void handleBlinkDetection(uint32_t now, uint16_t prox) {
         emitBlinkEvent(now, prox, sigma, zRise, zDrop, devPolarity);
         devPolarity = 0;
         crossStartMs = 0;
+        stage = "TRIGGER";
+        emitCaptureSnapshot(now, stage, prox, sigma, zRise, zDrop, dev, true);
+        return;
       }
+      stage = "TRACK";
     }
   } else if (beyondZ) {
     bool release = (devPolarity == +1) ? exitRise : exitDrop;
@@ -298,8 +404,13 @@ void handleBlinkDetection(uint32_t now, uint16_t prox) {
       beyondZ = false;
       devPolarity = 0;
       crossStartMs = 0;
+      stage = "RESET";
+    } else {
+      stage = "HOLD";
     }
   }
+
+  emitCaptureSnapshot(now, stage, prox, sigma, zRise, zDrop, dev, enterAny);
 }
 
 void emitStatus(uint32_t now) {
@@ -329,6 +440,8 @@ void emitStatus(uint32_t now) {
     Serial.print(" | zDrop=");
     Serial.print(zDrop, 2);
   }
+  Serial.print(" | ready=");
+  Serial.print(blinkReady ? 1 : 0);
   Serial.println();
 }
 
@@ -424,6 +537,13 @@ void processCommand(const char* cmd) {
     startProgrammedSequence();
   } else if (strcmp(cmd, "STOP") == 0) {
     cancelSequence();
+  } else if (strncmp(cmd, "CAPTURE", 7) == 0) {
+    const char* arg = cmd + 7;
+    while (*arg == ' ') arg++;
+    int val = (*arg == '\0') ? 1 : atoi(arg);
+    captureMode = (val != 0);
+    Serial.print("CAPTURE ");
+    Serial.println(captureMode ? "ON" : "OFF");
   }
 }
 

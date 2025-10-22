@@ -2,6 +2,7 @@
 // Config: see .env for SERIAL_PORT, BAUD, PORT
 
 require('dotenv').config();
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const http = require('http');
@@ -10,9 +11,23 @@ const { SerialPort } = require('serialport');
 
 const argv = process.argv.slice(2);
 const DEBUG_MODE = argv.includes('--debug');
+const CAPTURE_MODE = argv.includes('--capture');
+let captureStream = null;
+let captureFilePath = null;
 
 if (DEBUG_MODE) {
   console.log('[DEBUG] Raw ESP logging enabled');
+}
+
+if (CAPTURE_MODE) {
+  const captureDir = path.join(__dirname, 'captures');
+  if (!fs.existsSync(captureDir)) {
+    fs.mkdirSync(captureDir, { recursive: true });
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  captureFilePath = path.join(captureDir, `capture-${stamp}.log`);
+  captureStream = fs.createWriteStream(captureFilePath, { flags: 'w' });
+  console.log(`[CAPTURE] Writing serial telemetry to ${captureFilePath}`);
 }
 
 const HTTP_PORT = Number(process.env.PORT || 3007);
@@ -51,6 +66,11 @@ function broadcast(obj) {
   wss.clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
+}
+
+function writeCaptureLine(text) {
+  if (!captureStream) return;
+  captureStream.write(`${Date.now()} ${text}\n`);
 }
 
 function detectLineKind(line) {
@@ -141,6 +161,19 @@ function parseStatusLine(line) {
   if ('sigma' in data) status.sigma = Number(data.sigma);
   if ('zRise' in data) status.zRise = Number(data.zRise);
   if ('zDrop' in data) status.zDrop = Number(data.zDrop);
+  if ('ready' in data) {
+    const readyStr = data.ready.trim().toLowerCase();
+    if (readyStr === 'true' || readyStr === '1') {
+      status.ready = true;
+    } else if (readyStr === 'false' || readyStr === '0') {
+      status.ready = false;
+    } else {
+      const asNum = Number(readyStr);
+      if (!Number.isNaN(asNum)) {
+        status.ready = asNum >= 1;
+      }
+    }
+  }
   return status;
 }
 
@@ -269,6 +302,10 @@ function handleStatus(status) {
     ? status.confidence
     : undefined;
   const prox = typeof status.prox === 'number' && !Number.isNaN(status.prox) ? status.prox : undefined;
+  const readyValue = typeof status.ready === 'boolean'
+    ? status.ready
+    : (typeof status.ready === 'number' && !Number.isNaN(status.ready) ? status.ready >= 1 : undefined);
+  const readyOk = readyValue === undefined ? true : readyValue;
 
   const runningOrPending = controlState.sequenceActive || controlState.startPending;
 
@@ -310,10 +347,11 @@ function handleStatus(status) {
   if (
     controlState.autoArmed &&
     status.state === 'PRESENCE' &&
+    readyOk &&
     confidence !== undefined &&
     confidence >= CONTROL_CFG.confStart
   ) {
-    requestStart('auto-confidence', { confidence, time_ms: status.time_ms });
+    requestStart('auto-confidence', { confidence, time_ms: status.time_ms, ready: readyValue });
   }
 }
 
@@ -345,6 +383,12 @@ async function start() {
     serial = new SerialPort({ path: portPath, baudRate: BAUD });
     serialPort = serial;
     controlLog('serial-open', { port: portPath, baud: BAUD });
+    if (CAPTURE_MODE) {
+      serial.write('CAPTURE 1\n');
+      controlLog('capture-enabled', { file: captureFilePath });
+    } else {
+      serial.write('CAPTURE 0\n');
+    }
 
     serial.on('error', (err) => {
       console.error('Serial error:', err.message);
@@ -364,6 +408,9 @@ async function start() {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         if (!line) continue;
+        if (CAPTURE_MODE) {
+          writeCaptureLine(line);
+        }
         broadcastDebugLine(line);
         const blink = parseBlinkLine(line);
         if (blink) {
@@ -404,6 +451,8 @@ async function start() {
       serial: !!serialPort,
       control: CONTROL_CFG,
       debug: DEBUG_MODE,
+      capture: CAPTURE_MODE,
+      captureFile: captureFilePath,
     }));
 
     ws.on('message', (raw) => {
@@ -443,4 +492,22 @@ controlLog('controller-init', { config: CONTROL_CFG, debug: DEBUG_MODE });
 start().catch((e) => {
   console.error(e);
   process.exit(1);
+});
+
+function shutdownCapture() {
+  if (captureStream) {
+    captureStream.end();
+    captureStream = null;
+    console.log('[CAPTURE] stream closed');
+  }
+}
+
+process.on('exit', shutdownCapture);
+process.on('SIGINT', () => {
+  shutdownCapture();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  shutdownCapture();
+  process.exit(0);
 });
