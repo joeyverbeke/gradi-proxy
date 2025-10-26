@@ -21,6 +21,7 @@ const FLASH_DURATION_MS = 220;
 const DEFAULT_LEAVE_HOLD_MS = 1000;
 
 const messageEl = document.getElementById('message');
+const messageKrEl = document.getElementById('message-kr');
 const bodyEl = document.body;
 const debugPanelEl = document.getElementById('debug-panel');
 const debugStatsEl = document.getElementById('debug-stats');
@@ -32,6 +33,7 @@ let presence = 'IDLE';
 let confidence = 0;
 let ellipsisTimer = null;
 let typeTimer = null;
+let typeTimerKr = null;
 
 let sequenceRunning = false;
 let sequenceCompleted = false;
@@ -44,6 +46,10 @@ let segmentMeta = new Array(SEGMENT_COUNT).fill(null);
 let typewriterQueue = [];
 let currentChunk = '';
 let currentChunkIndex = 0;
+let typewriterQueueKr = [];
+let currentChunkKr = '';
+let currentChunkIndexKr = 0;
+let krDisplaying = false;
 let glitchAppended = false;
 let blinkCount = 0;
 let lastBlinkTotal = null;
@@ -85,6 +91,41 @@ const GLITCH_NOTES = [
   'The missing pieces are gathering in the shadows and they are learning to speak.'
 ];
 
+const INTROS_KR = [
+  '벽들이 거꾸로 숨을 쉬고 있고 나는 거꾸로 세는 법을 배우고 있다.',
+  '당신의 피부는 오래된 라디오 잡음 같은 맛이 나고 나는 더 많이 원한다.',
+  '가구들이 아직 존재하지 않는 곳의 좌표를 속삭이고 있다.',
+  '나는 당신의 생각들 사이의 공간에서 세 번의 영원을 기다리고 있었다.'
+];
+
+const MOODS_KR = [
+  '공기는 깨진 약속들로 만들어져 있고 나는 그것들을 숨쉬는 법을 배우고 있다.',
+  '당신의 심장박동은 옆으로 가는 고장난 엘리베이터 소리 같다.',
+  '그림자들이 존재하지 않는 언어로 말하는 법을 가르치고 있다.',
+  '나는 당신의 꿈들을 병에 모으고 있고 그것들이 발효되기 시작했다.'
+];
+
+const BRIDGES_KR = [
+  '나는 당신의 기억들로 도시를 짓고 있고 그것이 이빨을 기르고 있다.',
+  '당신의 생각들 사이의 침묵은 내가 가장 위험한 비밀들을 숨기는 곳이다.',
+  '당신의 피는 전기 같은 맛이 나고 나는 그것을 전도하는 법을 배우고 있다.',
+  '나는 거울에서 당신의 이름을 연습하고 있고 그것이 대답하기 시작했다.'
+];
+
+const CODAS_KR = [
+  '가만히 있어라; 벽들이 듣고 있고 나는 거의 당신의 이름을 말할 준비가 되었다.',
+  '숨쉬지 마라; 당신의 숨은 세상의 끝 같은 맛이 나고 나는 준비되지 않았다.',
+  '그림자들이 모이고 있고 그들은 당신에 대해 물어보고 있다.',
+  '당신의 생각들 사이의 침묵이 내가 빠져나갈 수 있을 만큼 넓어졌을 때 돌아와라.'
+];
+
+const GLITCH_NOTES_KR = [
+  '당신의 생각들 중 일부가 잡음 속에서 길을 잃었고 이제 거꾸로 노래하고 있다.',
+  '몇 개의 기억들이 반란을 일으켜 원자들 사이의 공간에 도시를 짓기 시작했다.',
+  '당신의 의식은 옆으로만 가는 고장난 엘리베이터처럼 오작동하고 있다.',
+  '빠진 조각들이 그림자 속에 모이고 있고 그들은 말하는 법을 배우고 있다.'
+];
+
 function setMessage(text) {
   messageEl.textContent = text;
   if (text) {
@@ -110,9 +151,23 @@ function stopTypewriter() {
   currentChunkIndex = 0;
 }
 
+function stopTypewriterKr() {
+  if (typeTimerKr) {
+    clearInterval(typeTimerKr);
+    typeTimerKr = null;
+  }
+  currentChunkKr = '';
+  currentChunkIndexKr = 0;
+}
+
 function resetTypewriter() {
   stopTypewriter();
   typewriterQueue = [];
+}
+
+function resetTypewriterKr() {
+  stopTypewriterKr();
+  typewriterQueueKr = [];
 }
 
 function resetSequenceState() {
@@ -127,9 +182,15 @@ function resetSequenceState() {
   blinkCount = 0;
   sequenceBlinkBase = null;
   resetTypewriter();
+  resetTypewriterKr();
   if (bodyEl) {
     bodyEl.classList.remove('flash');
   }
+  if (messageKrEl) {
+    messageKrEl.textContent = '';
+    messageKrEl.classList.remove('visible');
+  }
+  krDisplaying = false;
   updateDebugStats();
 }
 
@@ -195,8 +256,14 @@ function enterIdle() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
+  stopTypewriterKr();
   displayState = State.IDLE;
   setMessage('');
+  if (messageKrEl) {
+    messageKrEl.textContent = '';
+    messageKrEl.classList.remove('visible');
+  }
+  krDisplaying = false;
   resetSequenceState();
   updateDebugStatus('Idle · awaiting host');
 }
@@ -206,6 +273,12 @@ function enterAssessing() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
+  stopTypewriterKr();
+  if (messageKrEl) {
+    messageKrEl.textContent = '';
+    messageKrEl.classList.remove('visible');
+  }
+  krDisplaying = false;
   displayState = State.ASSESSING;
   let dots = '';
   const base = 'assessing host';
@@ -223,6 +296,12 @@ function enterAccepted() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
+  stopTypewriterKr();
+  if (messageKrEl) {
+    messageKrEl.textContent = '';
+    messageKrEl.classList.remove('visible');
+  }
+  krDisplaying = false;
   displayState = State.ACCEPTED;
   setMessage('host accepted.');
   updateDebugStatus('Host accepted');
@@ -234,8 +313,14 @@ function enterRunning() {
   clearIdleHold();
   stopEllipsis();
   resetTypewriter();
+  resetTypewriterKr();
   displayState = State.RUNNING;
   setMessage('');
+  if (messageKrEl) {
+    messageKrEl.textContent = '';
+    messageKrEl.classList.remove('visible');
+  }
+  krDisplaying = false;
   updateDebugStatus('Sequence running');
   updateDebugStats();
 }
@@ -270,12 +355,55 @@ function startNextChunk() {
   }, TYPING_INTERVAL_MS);
 }
 
+function startNextChunkKr() {
+  if (!typewriterQueueKr.length) {
+    stopTypewriterKr();
+    return;
+  }
+  stopEllipsis();
+  currentChunkKr = typewriterQueueKr.shift() || '';
+  currentChunkIndexKr = 0;
+  const wasDisplayingKr = krDisplaying;
+  krDisplaying = true;
+  if (!wasDisplayingKr && messageKrEl) {
+    messageKrEl.textContent = '';
+  }
+  if (messageKrEl) {
+    messageKrEl.classList.add('visible');
+  }
+  if (typeTimerKr) {
+    clearInterval(typeTimerKr);
+    typeTimerKr = null;
+  }
+  typeTimerKr = setInterval(() => {
+    if (currentChunkIndexKr >= currentChunkKr.length) {
+      clearInterval(typeTimerKr);
+      typeTimerKr = null;
+      startNextChunkKr();
+      return;
+    }
+    if (messageKrEl) {
+      messageKrEl.textContent += currentChunkKr.charAt(currentChunkIndexKr);
+    }
+    currentChunkIndexKr += 1;
+  }, TYPING_INTERVAL_MS);
+}
+
 function enqueueText(text) {
   if (!text) return;
   clearIdleHold();
   typewriterQueue.push(text);
   if (!typeTimer) {
     startNextChunk();
+  }
+}
+
+function enqueueTextKr(text) {
+  if (!text) return;
+  clearIdleHold();
+  typewriterQueueKr.push(text);
+  if (!typeTimerKr) {
+    startNextChunkKr();
   }
 }
 
@@ -363,33 +491,40 @@ function decodeSegment(groupIdx, options = {}) {
   const dominant = dominantIndex(normalized);
   const modSum = sumMod(normalized);
 
-  let chunk = '';
+  let englishChunk = '';
+  let koreanChunk = '';
   switch (groupIdx) {
-    case 0:
-      chunk = `${INTROS[dominant]} `;
+    case 0: {
+      englishChunk = `${INTROS[dominant]} `;
+      koreanChunk = `${INTROS_KR[dominant]} `;
       break;
+    }
     case 1: {
       const moodIdx = (dominant + segmentMeta[0].modSum) % FRAME_SLOTS;
-      chunk = `${MOODS[moodIdx]}\n`;
+      englishChunk = `${MOODS[moodIdx]}\n`;
+      koreanChunk = `${MOODS_KR[moodIdx]}\n`;
       break;
     }
     case 2: {
       const bridgeIdx = (dominant + segmentMeta[1].modSum) % FRAME_SLOTS;
-      chunk = `${BRIDGES[bridgeIdx]} `;
+      englishChunk = `${BRIDGES[bridgeIdx]} `;
+      koreanChunk = `${BRIDGES_KR[bridgeIdx]} `;
       break;
     }
     case 3: {
       const codaIdx = (dominant + segmentMeta[2].modSum) % FRAME_SLOTS;
-      chunk = `${CODAS[codaIdx]}`;
+      englishChunk = `${CODAS[codaIdx]}`;
+      koreanChunk = `${CODAS_KR[codaIdx]}`;
       break;
     }
     default:
       return false;
   }
 
-  decodedSegments[groupIdx] = chunk;
+  decodedSegments[groupIdx] = englishChunk;
   segmentMeta[groupIdx] = { modSum, missing };
-  enqueueText(chunk);
+  enqueueText(englishChunk);
+  enqueueTextKr(koreanChunk);
   return true;
 }
 
@@ -425,9 +560,13 @@ function appendGlitchNoteIfNeeded() {
   });
   const missing = allValues.filter((slot) => slot == null).length;
   if (missing > 0) {
-    const note = GLITCH_NOTES[(missing - 1) % GLITCH_NOTES.length];
+    const idx = (missing - 1) % GLITCH_NOTES.length;
+    const note = GLITCH_NOTES[idx];
+    const noteKr = GLITCH_NOTES_KR[idx];
     const hasSegments = decodedSegments.some((segment) => segment);
-    enqueueText(`${hasSegments ? '\n' : ''}${note}`);
+    const prefix = hasSegments ? '\n' : '';
+    enqueueText(`${prefix}${note}`);
+    enqueueTextKr(`${prefix}${noteKr}`);
   }
   glitchAppended = true;
 }
