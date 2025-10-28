@@ -15,6 +15,29 @@ const CAPTURE_MODE = argv.includes('--capture');
 let captureStream = null;
 let captureFilePath = null;
 
+let cliSerialPort = null;
+for (let i = 0; i < argv.length; i += 1) {
+  const arg = argv[i];
+  if (arg === '--port') {
+    const next = argv[i + 1];
+    if (!next || next.startsWith('--')) {
+      console.warn('[WARN] --port flag requires a value (e.g. --port ttyACM0); falling back to env.');
+    } else {
+      cliSerialPort = next;
+    }
+    break;
+  }
+  if (arg.startsWith('--port=')) {
+    const value = arg.slice('--port='.length);
+    if (value) {
+      cliSerialPort = value;
+    } else {
+      console.warn('[WARN] --port flag requires a value (e.g. --port ttyACM0); falling back to env.');
+    }
+    break;
+  }
+}
+
 if (DEBUG_MODE) {
   console.log('[DEBUG] Raw ESP logging enabled');
 }
@@ -33,7 +56,13 @@ if (CAPTURE_MODE) {
 const HTTP_PORT = Number(process.env.PORT || 3007);
 const BAUD = Number(process.env.BAUD || 115200);
 const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
-const SERIAL_HINT = serialEnv.startsWith('/') ? serialEnv : `/dev/${serialEnv}`;
+const serialSource = cliSerialPort || serialEnv;
+if (cliSerialPort) {
+  console.log(`[CLI] Serial port override detected: ${cliSerialPort}`);
+}
+const SERIAL_HINT = serialSource
+  ? (serialSource.startsWith('/') ? serialSource : `/dev/${serialSource}`)
+  : null;
 
 const CONTROL_CFG = {
   confStart: Number.parseFloat(process.env.CONF_START_THRESHOLD ?? '') || 0.95,

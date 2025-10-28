@@ -41,6 +41,14 @@ npm start
 
 Open `http://localhost:3007` in a browser to load the dashboard. The UI auto-connects to `/ws`, streams proximity data, and mirrors controller state. Manual start/stop buttons emit JSON messages that route back through the Node controller, so manual and auto control share the same path.
 
+To override the `.env` serial port at launch, pass a CLI flag through npm:
+
+```bash
+npm start -- --port ttyACM0
+```
+
+Any `/dev/...` path works; values without a leading slash are prefixed with `/dev/`.
+
 For engineering diagnostics, the legacy dashboard remains available at `http://localhost:3007/debug/`.
 
 Auto Control Overview
