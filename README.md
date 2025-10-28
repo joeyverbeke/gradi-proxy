@@ -24,6 +24,13 @@ cp .env.example .env
 
 `.env.example` documents every configuration option; copy it and adjust values for your environment (serial path, baud rate, auto-control thresholds).
 
+Hardware Notes
+--------------
+
+- Drive the DRV8833 motor supply (`VM`) at 6.0 V so the valve receives its required rail; ensure ESP32 and driver share ground and add ≥470 µF bulk capacitance at the driver.
+- The firmware caps the pump PWM duty at 767/1023 (~75 %) which keeps the pump’s effective voltage at ≈4.5 V despite the higher supply. Adjusting `duty_run` above this limit has no effect—the clamp protects the hardware.
+- Default timing now spends 400 ms in PRECHARGE and 70 ms in PUFF so the pump reaches full duty before the valve opens while remaining within each 400 ms slot.
+
 Running
 -------
 

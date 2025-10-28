@@ -27,12 +27,13 @@ const int SCL_PIN = D5;   // GPIO6
 const uint32_t PUMP_PWM_FREQ = 25000;   // 25 kHz (inaudible)
 const uint8_t  PUMP_PWM_RES  = 10;      // 10-bit (0..1023)
 const int      DUTY_MAX      = (1 << PUMP_PWM_RES) - 1;
+const int      DUTY_RUN_MAX  = 767;     // ~75% duty -> ~4.5 V at 6 V VM
 
 // -------------------- Tunables
-int precharge_ms = 220;     // pump build-up
-int puff_ms      = 50;      // valve open
+int precharge_ms = 400;     // pump build-up
+int puff_ms      = 70;      // valve open
 int guard_ms     = 350;     // eyelid recovery
-int duty_run     = 1000;    // pump strength (0..1023)
+int duty_run     = 767;     // pump strength cap (~4.5 V effective)
 int duty_idle    = 0;       // 0 = fully off between puffs
 int ramp_time_ms = 60;      // quiet spin up/down
 
@@ -453,6 +454,7 @@ uint32_t rampStart = 0, rampDur = 0;
 void pumpSetDuty(int duty) {
   if (duty < 0) duty = 0;
   if (duty > DUTY_MAX) duty = DUTY_MAX;
+  if (duty > DUTY_RUN_MAX) duty = DUTY_RUN_MAX;
   ledcWrite(P_AIN1, duty); // v3.x: write duty by pin
 }
 
