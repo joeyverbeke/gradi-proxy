@@ -41,13 +41,12 @@ npm start
 
 Open `http://localhost:3007` in a browser to load the dashboard. The UI auto-connects to `/ws`, streams proximity data, and mirrors controller state. Manual start/stop buttons emit JSON messages that route back through the Node controller, so manual and auto control share the same path.
 
-To override the `.env` serial port at launch, pass a CLI flag through npm:
+Common CLI flags (pass after `--` so npm forwards them):
 
-```bash
-npm start -- --port ttyACM0
-```
+- `--port <device>` — override the serial device from `.env` (accepts `ttyACM0` or a full `/dev/...` path).
+- `--fullscreen` — launch Chrome in kiosk mode on Windows/WSL, pointing at the dashboard.
 
-Any `/dev/...` path works; values without a leading slash are prefixed with `/dev/`.
+Chrome must be installed in the default location (`C:\Program Files\Google\Chrome\Application\chrome.exe` or the x86 variant). Override the binary with `CHROME_PATH` if needed. The kiosk run uses a dedicated profile at `C:\gradi-proxy-kiosk`; change it with `CHROME_PROFILE_DIR`.
 
 For engineering diagnostics, the legacy dashboard remains available at `http://localhost:3007/debug/`.
 

@@ -8,10 +8,12 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const { SerialPort } = require('serialport');
+const { spawn } = require('child_process');
 
 const argv = process.argv.slice(2);
 const DEBUG_MODE = argv.includes('--debug');
 const CAPTURE_MODE = argv.includes('--capture');
+const FULLSCREEN_MODE = argv.includes('--fullscreen');
 let captureStream = null;
 let captureFilePath = null;
 
@@ -59,6 +61,9 @@ const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
 const serialSource = cliSerialPort || serialEnv;
 if (cliSerialPort) {
   console.log(`[CLI] Serial port override detected: ${cliSerialPort}`);
+}
+if (FULLSCREEN_MODE) {
+  console.log('[CLI] Fullscreen dashboard launch requested');
 }
 const SERIAL_HINT = serialSource
   ? (serialSource.startsWith('/') ? serialSource : `/dev/${serialSource}`)
@@ -398,6 +403,131 @@ async function pickSerialPort() {
   return (preferred || ports[0] || {}).path;
 }
 
+const isWSL = (() => {
+  if (process.platform !== 'linux') return false;
+  if ('WSL_DISTRO_NAME' in process.env || 'WSL_INTEROP' in process.env) return true;
+  try {
+    const osRelease = fs.readFileSync('/proc/sys/kernel/osrelease', 'utf8');
+    return osRelease.toLowerCase().includes('microsoft');
+  } catch (err) {
+    return false;
+  }
+})();
+
+function normalizeChromeCandidate(rawPath) {
+  if (!rawPath) return null;
+  if (/^[a-z]:\\/i.test(rawPath)) {
+    const drive = rawPath[0].toLowerCase();
+    const rest = rawPath.slice(2).replace(/\\/g, '/').replace(/^\/+/, '');
+    return {
+      windows: rawPath,
+      wsl: `/mnt/${drive}/${rest}`,
+    };
+  }
+  if (rawPath.startsWith('/mnt/')) {
+    const converted = rawPath
+      .replace(/^\/mnt\/([a-z])\//i, (_, drive) => `${drive.toUpperCase()}:\\`)
+      .replace(/\//g, '\\');
+    return {
+      windows: converted,
+      wsl: rawPath,
+    };
+  }
+  return {
+    windows: rawPath,
+    wsl: rawPath,
+  };
+}
+
+function resolveChromeExecutable() {
+  const candidates = [];
+  if (process.env.CHROME_PATH) {
+    candidates.push(process.env.CHROME_PATH);
+  }
+  candidates.push(
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  );
+  for (const raw of candidates) {
+    const candidate = normalizeChromeCandidate(raw);
+    if (!candidate) continue;
+    if (process.platform === 'win32' && candidate.windows && fs.existsSync(candidate.windows)) {
+      return candidate;
+    }
+    if (isWSL && candidate.wsl && fs.existsSync(candidate.wsl)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolveKioskProfile() {
+  const defaultPath = 'C:\\gradi-proxy-kiosk';
+  const raw = process.env.CHROME_PROFILE_DIR || defaultPath;
+  const normalized = normalizeChromeCandidate(raw);
+  if (!normalized) return null;
+  try {
+    if (isWSL && normalized.wsl) {
+      fs.mkdirSync(normalized.wsl, { recursive: true });
+    } else if (normalized.windows) {
+      fs.mkdirSync(normalized.windows, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('[WARN] Failed to prepare Chrome profile directory:', err.message);
+  }
+  return normalized;
+}
+
+function launchFullscreenBrowser(url) {
+  const chrome = resolveChromeExecutable();
+  if (!chrome) {
+    console.error('[ERR] Unable to locate Chrome executable. Set CHROME_PATH to the Windows Chrome path.');
+    return;
+  }
+  const profile = resolveKioskProfile();
+  if (profile && profile.windows) {
+    console.log('[CLI] Chrome kiosk profile:', profile.windows);
+  }
+  const chromeArgs = [
+    '--kiosk',
+    '--new-window',
+    '--start-fullscreen',
+    '--disable-infobars',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ];
+  if (profile && profile.windows) {
+    const profileArg = profile.windows.includes(' ')
+      ? `--user-data-dir="${profile.windows}"`
+      : `--user-data-dir=${profile.windows}`;
+    chromeArgs.push(profileArg);
+  }
+  chromeArgs.push(url);
+
+  try {
+    if (isWSL && chrome.wsl) {
+      console.log('[CLI] Launching Chrome fullscreen (WSL):', chrome.wsl, chromeArgs.join(' '));
+      const child = spawn(chrome.wsl, chromeArgs, {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+    } else if (process.platform === 'win32' && chrome.windows) {
+      console.log('[CLI] Launching Chrome fullscreen (Windows):', chrome.windows, chromeArgs.join(' '));
+      const child = spawn(chrome.windows, chromeArgs, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false,
+      });
+      child.unref();
+    } else {
+      console.warn('[WARN] Fullscreen flag ignored: unsupported platform.');
+    }
+  } catch (err) {
+    console.error('[ERR] Failed to launch Chrome fullscreen:', err.message);
+  }
+}
+
 async function start() {
   const portPath = await pickSerialPort();
   if (!portPath) {
@@ -473,7 +603,11 @@ async function start() {
     });
   }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, request) => {
+    controlLog('ws-client-connect', {
+      remote: request && request.socket ? request.socket.remoteAddress : null,
+      userAgent: request && request.headers ? request.headers['user-agent'] : null,
+    });
     ws.send(JSON.stringify({
       type: 'hello',
       baud: BAUD,
@@ -509,10 +643,19 @@ async function start() {
           break;
       }
     });
+
+    ws.on('close', () => {
+      controlLog('ws-client-close', {
+        remote: request && request.socket ? request.socket.remoteAddress : null,
+      });
+    });
   });
 
   server.listen(HTTP_PORT, () => {
     console.log(`HTTP: http://localhost:${HTTP_PORT}`);
+    if (FULLSCREEN_MODE) {
+      launchFullscreenBrowser(`http://localhost:${HTTP_PORT}`);
+    }
   });
 }
 
