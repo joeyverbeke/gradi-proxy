@@ -282,10 +282,18 @@ function enterAssessing() {
   displayState = State.ASSESSING;
   let dots = '';
   const base = 'assessing host';
+  const baseKr = '숙주 평가 중';
   setMessage(`${base}...`);
+  if (messageKrEl) {
+    messageKrEl.textContent = `${baseKr}...`;
+    messageKrEl.classList.add('visible');
+  }
   ellipsisTimer = setInterval(() => {
     dots = dots.length >= 3 ? '' : `${dots}.`;
     setMessage(`${base}${dots}`);
+    if (messageKrEl) {
+      messageKrEl.textContent = `${baseKr}${dots}`;
+    }
   }, 420);
   updateDebugStatus('Assessing host');
   updateDebugStats();
@@ -304,6 +312,10 @@ function enterAccepted() {
   krDisplaying = false;
   displayState = State.ACCEPTED;
   setMessage('host accepted.');
+  if (messageKrEl) {
+    messageKrEl.textContent = '숙주 승인 완료.';
+    messageKrEl.classList.add('visible');
+  }
   updateDebugStatus('Host accepted');
   updateDebugStats();
 }
