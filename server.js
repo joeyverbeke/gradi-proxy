@@ -18,12 +18,13 @@ let captureStream = null;
 let captureFilePath = null;
 
 let cliSerialPort = null;
+const npmConfigSerialPort = process.env.npm_config_port;
 for (let i = 0; i < argv.length; i += 1) {
   const arg = argv[i];
   if (arg === '--port') {
     const next = argv[i + 1];
     if (!next || next.startsWith('--')) {
-      console.warn('[WARN] --port flag requires a value (e.g. --port ttyACM0); falling back to env.');
+      console.warn('[WARN] --port flag requires a value (e.g. --port /dev/gradi-esp-compress); falling back to env.');
     } else {
       cliSerialPort = next;
     }
@@ -34,10 +35,20 @@ for (let i = 0; i < argv.length; i += 1) {
     if (value) {
       cliSerialPort = value;
     } else {
-      console.warn('[WARN] --port flag requires a value (e.g. --port ttyACM0); falling back to env.');
+      console.warn('[WARN] --port flag requires a value (e.g. --port /dev/gradi-esp-compress); falling back to env.');
     }
     break;
   }
+}
+if (!cliSerialPort) {
+  const positionalArg = argv.find((arg) => !arg.startsWith('--'));
+  if (positionalArg) {
+    cliSerialPort = positionalArg;
+    console.warn('[WARN] Detected bare CLI argument; assuming it is a serial port override. Prefer "npm start -- --port <device>" to avoid npm warnings.');
+  }
+}
+if (!cliSerialPort && npmConfigSerialPort) {
+  cliSerialPort = npmConfigSerialPort;
 }
 
 if (DEBUG_MODE) {
@@ -57,7 +68,7 @@ if (CAPTURE_MODE) {
 
 const HTTP_PORT = Number(process.env.PORT || 3007);
 const BAUD = Number(process.env.BAUD || 115200);
-const serialEnv = process.env.SERIAL_PORT || 'ttyACM0';
+const serialEnv = process.env.SERIAL_PORT || '/dev/gradi-esp-compress';
 const serialSource = cliSerialPort || serialEnv;
 if (cliSerialPort) {
   console.log(`[CLI] Serial port override detected: ${cliSerialPort}`);

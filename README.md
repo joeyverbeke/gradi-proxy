@@ -36,6 +36,7 @@ Running
 
 ```bash
 npm start
+npm start -- --port /dev/gradi-esp-compress
 # server logs: HTTP: http://localhost:3007
 ```
 
@@ -43,8 +44,16 @@ Open `http://localhost:3007` in a browser to load the dashboard. The UI auto-con
 
 Common CLI flags (pass after `--` so npm forwards them):
 
-- `--port <device>` — override the serial device from `.env` (accepts `ttyACM0` or a full `/dev/...` path).
+- `--port <device>` — override the serial device from `.env` (defaults to `/dev/gradi-esp-compress`, but any `/dev/...` path or bare device name works).
 - `--fullscreen` — launch Chrome in kiosk mode on Windows/WSL, pointing at the dashboard.
+
+Example:
+
+```bash
+npm start -- --port /dev/gradi-esp-compress
+# shorthand with a bare positional arg (will show a warning but still works):
+npm start /dev/gradi-esp-compress
+```
 
 Chrome must be installed in the default location (`C:\Program Files\Google\Chrome\Application\chrome.exe` or the x86 variant). Override the binary with `CHROME_PATH` if needed. The kiosk run uses a dedicated profile at `C:\gradi-proxy-kiosk`; change it with `CHROME_PROFILE_DIR`.
 
@@ -63,7 +72,7 @@ Thresholds live in environment variables (defaults in `.env.example`):
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `SERIAL_PORT` | ttyACM0 | Serial device path; leave unset to auto-pick |
+| `SERIAL_PORT` | /dev/gradi-esp-compress | Serial device path; leave unset to auto-pick |
 | `BAUD` | 115200 | Serial baud rate |
 | `PORT` | 3007 | HTTP/WebSocket port |
 | `CONF_START_THRESHOLD` | 0.95 | Confidence needed to auto-start |
