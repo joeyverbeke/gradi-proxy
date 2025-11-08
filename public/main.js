@@ -16,6 +16,7 @@ const FRAME_SLOTS = 4;
 const SEGMENT_COUNT = 4;
 const FRAME_DURATION = SLOT_DURATION * FRAME_SLOTS;
 const TOTAL_FRAMES = 16;
+const NO_BLINK_SLOT = -1;
 const TYPING_INTERVAL_MS = 35;
 const FLASH_DURATION_MS = 220;
 const DEFAULT_LEAVE_HOLD_MS = 1000;
@@ -59,6 +60,7 @@ let leaveHoldMs = DEFAULT_LEAVE_HOLD_MS;
 let idleHoldTimer = null;
 let debugEnabled = false;
 let lastProx = null;
+let framesResolved = 0;
 
 const INTROS = [
   'The walls are breathing in reverse and I am learning to count backwards.',
@@ -181,6 +183,7 @@ function resetSequenceState() {
   glitchAppended = false;
   blinkCount = 0;
   sequenceBlinkBase = null;
+  framesResolved = 0;
   resetTypewriter();
   resetTypewriterKr();
   if (bodyEl) {
@@ -439,7 +442,7 @@ function flashScreen() {
 function tallySlots(values) {
   const tally = [0, 0, 0, 0];
   values.forEach((val) => {
-    if (val != null && Number.isFinite(val)) {
+    if (val != null && Number.isFinite(val) && val >= 0) {
       tally[val] += 1;
     }
   });
@@ -460,7 +463,12 @@ function dominantIndex(values) {
 }
 
 function sumMod(values) {
-  return values.reduce((acc, val) => acc + (val || 0), 0) % FRAME_SLOTS;
+  return values.reduce((acc, val) => {
+    if (val == null || !Number.isFinite(val) || val < 0) {
+      return acc;
+    }
+    return acc + val;
+  }, 0) % FRAME_SLOTS;
 }
 
 function getGroupValues(groupIdx, options = {}) {
@@ -498,10 +506,10 @@ function decodeSegment(groupIdx, options = {}) {
 
   if (groupIdx > 0 && !segmentMeta[groupIdx - 1]) return false;
 
-  const normalized = values.map((val) => (val == null ? 0 : val));
-
-  const dominant = dominantIndex(normalized);
-  const modSum = sumMod(normalized);
+  const actualValues = values.filter((val) => val != null && val >= 0);
+  const hasBlinkData = actualValues.length > 0;
+  const dominant = hasBlinkData ? dominantIndex(actualValues) : Math.floor(Math.random() * FRAME_SLOTS);
+  const modSum = hasBlinkData ? sumMod(actualValues) : Math.floor(Math.random() * FRAME_SLOTS);
 
   let englishChunk = '';
   let koreanChunk = '';
@@ -548,10 +556,11 @@ function processSegments(options = {}) {
 }
 
 function updateProgressSegments() {
-  if (!sequenceRunning) return;
+  const resolvedFrames = Math.min(TOTAL_FRAMES, framesResolved);
+  if (resolvedFrames <= 0) return;
   const completedSegments = Math.min(
     SEGMENT_COUNT,
-    Math.floor(blinkCount / FRAME_SLOTS),
+    Math.floor(resolvedFrames / FRAME_SLOTS),
   );
   if (completedSegments <= 0) return;
   processSegments({
@@ -585,6 +594,7 @@ function appendGlitchNoteIfNeeded() {
 
 function finalizeSegments() {
   sequenceCompleted = true;
+  resolveAllFrames();
   processSegments({ allowFallback: true, allowPartial: true });
   appendGlitchNoteIfNeeded();
   updateDebugStatus('Sequence finalized');
@@ -595,8 +605,36 @@ function registerBlink(relativeMs) {
   const frameIdx = Math.floor(relativeMs / FRAME_DURATION);
   if (frameIdx < 0 || frameIdx >= TOTAL_FRAMES) return;
   const slotIdx = Math.max(0, Math.min(FRAME_SLOTS - 1, Math.floor((relativeMs % FRAME_DURATION) / SLOT_DURATION)));
-  if (sequenceFrames[frameIdx] != null) return;
+  if (sequenceFrames[frameIdx] != null && sequenceFrames[frameIdx] !== NO_BLINK_SLOT) return;
   sequenceFrames[frameIdx] = slotIdx;
+}
+
+function resolveFramesThrough(firmwareMs) {
+  if (!sequenceRunning) return;
+  if (typeof firmwareMs !== 'number' || Number.isNaN(firmwareMs)) return;
+  if (sequenceStartTimeMs == null) {
+    sequenceStartTimeMs = firmwareMs;
+  }
+  const relative = firmwareMs - sequenceStartTimeMs;
+  if (!Number.isFinite(relative) || relative < 0) return;
+  const completedFrames = Math.min(TOTAL_FRAMES, Math.floor(relative / FRAME_DURATION));
+  if (completedFrames <= framesResolved) return;
+  for (let frameIdx = framesResolved; frameIdx < completedFrames; frameIdx += 1) {
+    if (sequenceFrames[frameIdx] == null) {
+      sequenceFrames[frameIdx] = NO_BLINK_SLOT;
+    }
+  }
+  framesResolved = completedFrames;
+  updateProgressSegments();
+}
+
+function resolveAllFrames() {
+  for (let frameIdx = 0; frameIdx < TOTAL_FRAMES; frameIdx += 1) {
+    if (sequenceFrames[frameIdx] == null) {
+      sequenceFrames[frameIdx] = NO_BLINK_SLOT;
+    }
+  }
+  framesResolved = TOTAL_FRAMES;
 }
 
 function startSequence(startFirmwareMs, slots) {
@@ -618,6 +656,7 @@ function startSequence(startFirmwareMs, slots) {
   glitchAppended = false;
   sequenceBlinkBase = lastBlinkTotal != null ? lastBlinkTotal : null;
   blinkCount = 0;
+  framesResolved = 0;
   resetTypewriter();
   if (sequenceStartTimeMs != null) {
     lastFirmwareMs = sequenceStartTimeMs;
@@ -699,6 +738,7 @@ function handleStatus(status) {
   const prevPresence = presence;
   if (typeof status.time_ms === 'number') {
     lastFirmwareMs = status.time_ms;
+    resolveFramesThrough(status.time_ms);
   }
   if (typeof status.confidence === 'number') confidence = status.confidence;
   if (typeof status.prox === 'number' && !Number.isNaN(status.prox)) {
@@ -758,6 +798,9 @@ function handleSequenceLog(log) {
       updateDebugStatus('[SEQ] START');
       break;
     case 'END':
+      if (typeof log.time_ms === 'number') {
+        resolveFramesThrough(log.time_ms);
+      }
       endSequence();
       updateDebugStatus('[SEQ] END');
       break;
@@ -800,6 +843,7 @@ function handleBlinkEvent(evt) {
     if (sequenceStartTimeMs == null) {
       sequenceStartTimeMs = evt.time_ms;
     }
+    resolveFramesThrough(evt.time_ms);
   }
   if (typeof evt.blinks === 'number' && !Number.isNaN(evt.blinks)) {
     lastBlinkTotal = evt.blinks;
