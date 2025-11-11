@@ -898,6 +898,9 @@ function connect() {
             }
           }
           setDebugEnabled(Boolean(msg.debug));
+          if (bodyEl) {
+            bodyEl.classList.toggle('kiosk-mode', Boolean(msg.fullscreen));
+          }
           break;
         }
         case 'sample':

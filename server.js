@@ -627,6 +627,7 @@ async function start() {
       debug: DEBUG_MODE,
       capture: CAPTURE_MODE,
       captureFile: captureFilePath,
+      fullscreen: FULLSCREEN_MODE,
     }));
 
     ws.on('message', (raw) => {
