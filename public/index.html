@@ -8,8 +8,8 @@
       :root {
         color-scheme: dark;
         --bg: #000;
-        --text: #d2b48c; /* tan */
-        --flash: #fff;
+        --text: #F2FF94;
+        --flash: #F2FF94;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -49,9 +49,9 @@
         padding: 24px;
       }
       #message {
-        font-size: clamp(1.1rem, 3vw, 2rem);
+        font-size: clamp(0.9rem, 2.3vw, 1.6rem);
         line-height: 1.5;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.04em;
         text-transform: lowercase;
         white-space: pre-wrap;
         text-align: center;
@@ -62,15 +62,16 @@
         opacity: 1;
       }
       #message-kr {
-        font-size: clamp(1.1rem, 3vw, 2rem);
+        font-size: clamp(0.9rem, 2.3vw, 1.6rem);
         line-height: 1.5;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.06em;
         text-transform: lowercase;
         white-space: pre-wrap;
         text-align: center;
         opacity: 0;
         transition: opacity 220ms ease;
-        margin-top: 24px;
+        max-width: 34em;
+        margin: 24px auto 0;
         width: 100%;
       }
       #message-kr.visible {
