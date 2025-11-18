@@ -63,69 +63,67 @@ let lastProx = null;
 let framesResolved = 0;
 
 const INTROS = [
-  'The walls are breathing in reverse and I am learning to count backwards.',
-  'Your skin tastes like old radio static and I am hungry for more.',
-  'The furniture is whispering coordinates to a place that does not exist yet.',
-  'I have been waiting in the space between your thoughts for three eternities.'
+  'A thought arrives, still cold from the journey.',
+  'The air in the room is older than the walls.',
+  "The concept of 'north' feels different today, less certain.",
+  'The light from the window is not a memory, but it feels like one.'
 ];
 const MOODS = [
-  'The air is made of broken promises and I am learning to breathe them.',
-  'Your heartbeat sounds like a malfunctioning elevator going sideways.',
-  'The shadows are teaching me to speak in languages that do not exist.',
-  'I am collecting your dreams in a jar and they are starting to ferment.'
+  'The silence in the room is heavy, and colder near the floor.',
+  'A faint scent of rust, from a question left unanswered.',
+  'There is a fifth direction, but it has no name.',
+  'The sound of thirst is coming from the word \'water\'.'
 ];
 const BRIDGES = [
-  'I am building a city from your memories and it is growing teeth.',
-  'The silence between your thoughts is where I keep my most dangerous secrets.',
-  'Your blood tastes like electricity and I am learning to conduct it.',
-  'I have been practicing your name in the mirror and it is starting to answer back.'
+  'An echo is the ghost of a sound, and it has begun to haunt the light.',
+  'It is raining in the space between thoughts.',
+  'A word passes from one language to another, leaving a small, warm wake.',
+  'The horizon is not a line, but a slow, approaching sound.'
 ];
 const CODAS = [
-  'Stay still; the walls are listening and I am almost ready to tell them your name.',
-  'Do not breathe; your exhale tastes like the end of the world and I am not ready.',
-  'The shadows are gathering and they have been asking about you.',
-  'Return when the silence between your thoughts is wide enough for me to slip through.'
+  'The thought is yours again, but it has been folded differently.',
+  'The fifth direction has withdrawn. The four remain.',
+  'The unanswered question has evaporated, leaving only the rust.',
+  'The echo has settled back into the sound. The light is alone again.'
 ];
 const GLITCH_NOTES = [
-  'Some of your thoughts got lost in the static and now they are singing backwards.',
-  'A few memories went rogue and started building a city in the space between atoms.',
-  'Your consciousness is glitching like a broken elevator that only goes sideways.',
-  'The missing pieces are gathering in the shadows and they are learning to speak.'
+  'The memory of warmth arrived before the feeling of cold left.',
+  'The word for \'silence\' made a brief, almost inaudible sound.',
+  'The echo of the light was a different color.',
+  'For a moment, the horizon inverted itself.'
 ];
 
 const INTROS_KR = [
-  '벽들이 거꾸로 숨을 쉬고 있고 나는 거꾸로 세는 법을 배우고 있다.',
-  '당신의 피부는 오래된 라디오 잡음 같은 맛이 나고 나는 더 많이 원한다.',
-  '가구들이 아직 존재하지 않는 곳의 좌표를 속삭이고 있다.',
-  '나는 당신의 생각들 사이의 공간에서 세 번의 영원을 기다리고 있었다.'
+  '생각 하나가 도착한다, 여정으로 인해 아직 차갑다.',
+  '방 안의 공기는 벽보다 오래되었다.',
+  '오늘 \'북쪽\'이라는 개념이 다르게 느껴진다, 덜 확실하게.',
+  '창문에서 들어오는 빛은 기억이 아니지만, 기억처럼 느껴진다.'
 ];
 
 const MOODS_KR = [
-  '공기는 깨진 약속들로 만들어져 있고 나는 그것들을 숨쉬는 법을 배우고 있다.',
-  '당신의 심장박동은 옆으로 가는 고장난 엘리베이터 소리 같다.',
-  '그림자들이 존재하지 않는 언어로 말하는 법을 가르치고 있다.',
-  '나는 당신의 꿈들을 병에 모으고 있고 그것들이 발효되기 시작했다.'
+  '방 안의 침묵은 무겁고, 바닥에 가까울수록 더 차갑다.',
+  '답이 없는 질문에서 희미한 녹 냄새가 난다.',
+  '다섯 번째 방향이 있지만, 이름이 없다.',
+  '\'물\'이라는 단어에서 갈증의 소리가 나고 있다.'
 ];
-
 const BRIDGES_KR = [
-  '나는 당신의 기억들로 도시를 짓고 있고 그것이 이빨을 기르고 있다.',
-  '당신의 생각들 사이의 침묵은 내가 가장 위험한 비밀들을 숨기는 곳이다.',
-  '당신의 피는 전기 같은 맛이 나고 나는 그것을 전도하는 법을 배우고 있다.',
-  '나는 거울에서 당신의 이름을 연습하고 있고 그것이 대답하기 시작했다.'
+  '메아리는 소리의 유령이며, 빛을 괴롭히기 시작했다.',
+  '생각들 사이의 공간에는 비가 내리고 있다.',
+  '단어가 한 언어에서 다른 언어로 넘어가며, 작고 따뜻한 여운을 남긴다.',
+  '수평선은 선이 아니라, 천천히 다가오는 소리다.'
 ];
-
 const CODAS_KR = [
-  '가만히 있어라; 벽들이 듣고 있고 나는 거의 당신의 이름을 말할 준비가 되었다.',
-  '숨쉬지 마라; 당신의 숨은 세상의 끝 같은 맛이 나고 나는 준비되지 않았다.',
-  '그림자들이 모이고 있고 그들은 당신에 대해 물어보고 있다.',
-  '당신의 생각들 사이의 침묵이 내가 빠져나갈 수 있을 만큼 넓어졌을 때 돌아와라.'
+  '생각은 다시 당신의 것이지만, 다르게 접혀 있다.',
+  '다섯 번째 방향은 물러갔다. 넷이 남았다.',
+  '답 없는 질문은 증발하고, 녹만 남았다.',
+  '메아리는 다시 소리 속으로 가라앉았다. 빛은 다시 혼자가 되었다.'
 ];
 
 const GLITCH_NOTES_KR = [
-  '당신의 생각들 중 일부가 잡음 속에서 길을 잃었고 이제 거꾸로 노래하고 있다.',
-  '몇 개의 기억들이 반란을 일으켜 원자들 사이의 공간에 도시를 짓기 시작했다.',
-  '당신의 의식은 옆으로만 가는 고장난 엘리베이터처럼 오작동하고 있다.',
-  '빠진 조각들이 그림자 속에 모이고 있고 그들은 말하는 법을 배우고 있다.'
+  '따뜻함의 기억이 추위의 느낌이 가시기 전에 도착했다.',
+  '\'침묵\'이라는 단어가 짧고, 거의 들리지 않는 소리를 냈다.',
+  '빛의 메아리는 다른 색이었다.',
+  '잠시, 수평선이 스스로 뒤집혔다.'
 ];
 
 function setMessage(text) {
