@@ -344,9 +344,14 @@ function startNextChunk() {
     return;
   }
   stopEllipsis();
-  currentChunk = typewriterQueue.shift() || '';
-  currentChunkIndex = 0;
   const wasDisplaying = displayState === State.DISPLAYING;
+  const baseChunk = typewriterQueue.shift() || '';
+  const needsLineBreak = wasDisplaying &&
+    messageEl &&
+    messageEl.textContent &&
+    !messageEl.textContent.endsWith('\n');
+  currentChunk = `${needsLineBreak ? '\n' : ''}${baseChunk}`;
+  currentChunkIndex = 0;
   displayState = State.DISPLAYING;
   if (!wasDisplaying) {
     messageEl.textContent = '';
@@ -374,9 +379,14 @@ function startNextChunkKr() {
     return;
   }
   stopEllipsis();
-  currentChunkKr = typewriterQueueKr.shift() || '';
-  currentChunkIndexKr = 0;
   const wasDisplayingKr = krDisplaying;
+  const baseChunk = typewriterQueueKr.shift() || '';
+  const needsLineBreak = wasDisplayingKr &&
+    messageKrEl &&
+    messageKrEl.textContent &&
+    !messageKrEl.textContent.endsWith('\n');
+  currentChunkKr = `${needsLineBreak ? '\n' : ''}${baseChunk}`;
+  currentChunkIndexKr = 0;
   krDisplaying = true;
   if (!wasDisplayingKr && messageKrEl) {
     messageKrEl.textContent = '';
