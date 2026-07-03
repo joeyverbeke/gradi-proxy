@@ -24,18 +24,22 @@ const int SDA_PIN = D4;   // GPIO5
 const int SCL_PIN = D5;   // GPIO6
 
 // -------------------- PWM (v3.x LEDC pin-scoped)
-const uint32_t PUMP_PWM_FREQ = 25000;   // 25 kHz (inaudible)
-const uint8_t  PUMP_PWM_RES  = 10;      // 10-bit (0..1023)
+// 1 kHz: AIN2 is held static LOW, so AIN1 PWM runs the DRV8833 in fast-decay
+// (coast) mode on every off-pulse. At higher frequencies the on-pulse is too
+// short for the pump coil current to build before it collapses again, so
+// measured-average voltage doesn't translate into real torque.
+const uint32_t PUMP_PWM_FREQ = 1000;    // 1 kHz
+const uint8_t  PUMP_PWM_RES  = 8;       // 8-bit (0..255)
 const int      DUTY_MAX      = (1 << PUMP_PWM_RES) - 1;
-const int      DUTY_RUN_MAX  = 1000;     // ~98% duty -> full 4.5 V VM
+
+const int PUMP_KICK_DUTY = 170;  // ~4.0 V momentary kick to break static friction
+const int PUMP_KICK_MS   = 250;  // brief spin-up before dropping to run duty
+const int PUMP_RUN_DUTY  = 123;  // ~2.9 V sustained run, held continuously while present
 
 // -------------------- Tunables
-int precharge_ms = 400;     // pump build-up
-int puff_ms      = 70;      // valve open
+int precharge_ms = 400;     // lead-in before puff (valve closed; pump already running)
+int puff_ms      = 150;     // valve open
 int guard_ms     = 350;     // eyelid recovery
-int duty_run     = 1000;     // pump strength cap (~98% duty)
-int duty_idle    = 0;       // 0 = fully off between puffs
-int ramp_time_ms = 60;      // quiet spin up/down
 
 // -------------------- Blink detection cadence
 const uint32_t SAMPLE_INTERVAL_MS = 5;     // ~200 Hz sampling
@@ -138,7 +142,9 @@ const uint32_t printIntervalMs = 10;  // print every 10 ms
 
 // Forward declarations
 void enterState(PuffState s, uint32_t now);
-void updateRamp(uint32_t now);
+void updatePump(uint32_t now);
+void pumpStart(uint32_t now);
+void pumpStop();
 void handleSerialInput();
 void processCommand(const char* cmd);
 void startProgrammedSequence();
@@ -245,6 +251,7 @@ void handlePresenceFSM(uint32_t now, uint16_t prox) {
           presence = IDLE;
           holdTimerMs = 0;
           resetStatsAndConfidence(now);
+          cancelSequence();
         }
       } else {
         holdTimerMs = 0;
@@ -447,35 +454,33 @@ void emitStatus(uint32_t now) {
 }
 
 // -------------------- Pump helpers
-bool     rampActive = false;
-int      rampFrom = 0, rampTo = 0;
-uint32_t rampStart = 0, rampDur = 0;
+bool     pumpRunning   = false;
+uint32_t pumpKickUntil = 0;
 
 void pumpSetDuty(int duty) {
   if (duty < 0) duty = 0;
   if (duty > DUTY_MAX) duty = DUTY_MAX;
-  if (duty > DUTY_RUN_MAX) duty = DUTY_RUN_MAX;
   ledcWrite(P_AIN1, duty); // v3.x: write duty by pin
 }
 
-void startRamp(int fromDuty, int toDuty, uint32_t durationMs) {
-  rampFrom  = fromDuty;
-  rampTo    = toDuty;
-  rampDur   = durationMs;
-  rampStart = millis();
-  rampActive = (durationMs > 0 && fromDuty != toDuty);
-  if (!rampActive) pumpSetDuty(toDuty);
+// Kick to break static friction, then settle to a continuous run duty.
+// Runs for the whole presence session - never toggled off between puffs.
+void pumpStart(uint32_t now) {
+  pumpSetDuty(PUMP_KICK_DUTY);
+  pumpKickUntil = now + PUMP_KICK_MS;
+  pumpRunning = true;
 }
 
-void updateRamp(uint32_t now) {
-  if (!rampActive) return;
-  uint32_t elapsed = now - rampStart;
-  if (elapsed >= rampDur) {
-    pumpSetDuty(rampTo);
-    rampActive = false;
-  } else {
-    int duty = rampFrom + (int)((int32_t)(rampTo - rampFrom) * (int32_t)elapsed / (int32_t)rampDur);
-    pumpSetDuty(duty);
+void pumpStop() {
+  pumpSetDuty(0);
+  pumpRunning = false;
+  pumpKickUntil = 0;
+}
+
+void updatePump(uint32_t now) {
+  if (pumpRunning && pumpKickUntil && (int32_t)(now - pumpKickUntil) >= 0) {
+    pumpSetDuty(PUMP_RUN_DUTY);
+    pumpKickUntil = 0;
   }
 }
 
@@ -487,6 +492,7 @@ void cancelSequence() {
   Serial.print("SEQ CANCEL time_ms=");
   Serial.println(millis());
   enterState(REST, millis());
+  pumpStop();
 }
 
 void startProgrammedSequence() {
@@ -522,6 +528,7 @@ void startProgrammedSequence() {
   sequenceIndex = 0;
   sequenceActive = true;
   enterState(REST, now);
+  pumpStart(now);
 
   Serial.print("SEQ START time_ms=");
   Serial.print(sequenceStartMs);
@@ -575,17 +582,15 @@ void enterState(PuffState s, uint32_t now) {
   stateStart = now;
   switch (puffState) {
     case REST:
-      startRamp(duty_run, duty_idle, ramp_time_ms);
       valveOff();
       break;
     case PRECHARGE:
-      startRamp(duty_idle, duty_run, ramp_time_ms);
+      valveOff();
       break;
     case PUFF:
       valveOn();
       break;
     case RECOVER:
-      startRamp(duty_run, duty_idle, ramp_time_ms);
       valveOff();
       break;
   }
@@ -669,8 +674,8 @@ void loop() {
     Serial.print(" ms | prox="); Serial.println(proxSample);
   }
 
-  // --- Update pump ramp
-  updateRamp(now);
+  // --- Update pump (kick -> run transition)
+  updatePump(now);
 
   // --- Puff state machine
   SequenceEvent* current = (sequenceActive && sequenceIndex < SEQ_FRAMES) ? &sequenceEvents[sequenceIndex] : nullptr;
@@ -707,6 +712,7 @@ void loop() {
           Serial.print("SEQ END time_ms=");
           Serial.println(now);
           current = nullptr;
+          pumpStop();
         } else {
           current = &sequenceEvents[sequenceIndex];
         }
