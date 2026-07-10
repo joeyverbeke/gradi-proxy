@@ -20,8 +20,8 @@ const int P_AIN1  = D1;   // PWM -> AIN1
 const int P_AIN2  = D2;   // LOW -> AIN2
 const int V_BIN1  = D8;   // -> BIN1
 const int V_BIN2  = D9;   // -> BIN2
-const int SDA_PIN = D4;   // GPIO5
-const int SCL_PIN = D5;   // GPIO6
+const int SDA_PIN = D5;   // GPIO6
+const int SCL_PIN = D4;   // GPIO5
 
 // -------------------- PWM (v3.x LEDC pin-scoped)
 // 1 kHz: AIN2 is held static LOW, so AIN1 PWM runs the DRV8833 in fast-decay

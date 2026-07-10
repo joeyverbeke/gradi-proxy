@@ -22,7 +22,6 @@ const FLASH_DURATION_MS = 220;
 const DEFAULT_LEAVE_HOLD_MS = 1000;
 
 const messageEl = document.getElementById('message');
-const messageKrEl = document.getElementById('message-kr');
 const bodyEl = document.body;
 const debugPanelEl = document.getElementById('debug-panel');
 const debugStatsEl = document.getElementById('debug-stats');
@@ -34,7 +33,6 @@ let presence = 'IDLE';
 let confidence = 0;
 let ellipsisTimer = null;
 let typeTimer = null;
-let typeTimerKr = null;
 
 let sequenceRunning = false;
 let sequenceCompleted = false;
@@ -47,10 +45,6 @@ let segmentMeta = new Array(SEGMENT_COUNT).fill(null);
 let typewriterQueue = [];
 let currentChunk = '';
 let currentChunkIndex = 0;
-let typewriterQueueKr = [];
-let currentChunkKr = '';
-let currentChunkIndexKr = 0;
-let krDisplaying = false;
 let glitchAppended = false;
 let blinkCount = 0;
 let lastBlinkTotal = null;
@@ -93,38 +87,17 @@ const GLITCH_NOTES = [
   'For a moment, the horizon inverted itself.'
 ];
 
-const INTROS_KR = [
-  '생각 하나가 도착한다, 여정으로 인해 아직 차갑다.',
-  '방 안의 공기는 벽보다 오래되었다.',
-  '오늘 \'북쪽\'이라는 개념이 다르게 느껴진다, 덜 확실하게.',
-  '창문에서 들어오는 빛은 기억이 아니지만, 기억처럼 느껴진다.'
-];
-
-const MOODS_KR = [
-  '방 안의 침묵은 무겁고, 바닥에 가까울수록 더 차갑다.',
-  '답이 없는 질문에서 희미한 녹 냄새가 난다.',
-  '다섯 번째 방향이 있지만, 이름이 없다.',
-  '\'물\'이라는 단어에서 갈증의 소리가 나고 있다.'
-];
-const BRIDGES_KR = [
-  '메아리는 소리의 유령이며, 빛을 괴롭히기 시작했다.',
-  '생각들 사이의 공간에는 비가 내리고 있다.',
-  '단어가 한 언어에서 다른 언어로 넘어가며, 작고 따뜻한 여운을 남긴다.',
-  '수평선은 선이 아니라, 천천히 다가오는 소리다.'
-];
-const CODAS_KR = [
-  '생각은 다시 당신의 것이지만, 다르게 접혀 있다.',
-  '다섯 번째 방향은 물러갔다. 넷이 남았다.',
-  '답 없는 질문은 증발하고, 녹만 남았다.',
-  '메아리는 다시 소리 속으로 가라앉았다. 빛은 다시 혼자가 되었다.'
-];
-
-const GLITCH_NOTES_KR = [
-  '따뜻함의 기억이 추위의 느낌이 가시기 전에 도착했다.',
-  '\'침묵\'이라는 단어가 짧고, 거의 들리지 않는 소리를 냈다.',
-  '빛의 메아리는 다른 색이었다.',
-  '잠시, 수평선이 스스로 뒤집혔다.'
-];
+// Widest line drives the size: start at the cap and shrink to fit the column
+// so no phrase ever wraps onto a second line.
+const MESSAGE_MAX_FONT_PX = 1.6 * 16; // matches the 1.6rem cap in the CSS
+function fitMessageText() {
+  if (!messageEl) return;
+  messageEl.style.fontSize = `${MESSAGE_MAX_FONT_PX}px`;
+  if (messageEl.scrollWidth > messageEl.clientWidth) {
+    const scaled = MESSAGE_MAX_FONT_PX * (messageEl.clientWidth / messageEl.scrollWidth);
+    messageEl.style.fontSize = `${Math.floor(scaled * 100) / 100}px`;
+  }
+}
 
 function setMessage(text) {
   messageEl.textContent = text;
@@ -133,6 +106,7 @@ function setMessage(text) {
   } else {
     messageEl.classList.remove('visible');
   }
+  fitMessageText();
 }
 
 function stopEllipsis() {
@@ -151,23 +125,9 @@ function stopTypewriter() {
   currentChunkIndex = 0;
 }
 
-function stopTypewriterKr() {
-  if (typeTimerKr) {
-    clearInterval(typeTimerKr);
-    typeTimerKr = null;
-  }
-  currentChunkKr = '';
-  currentChunkIndexKr = 0;
-}
-
 function resetTypewriter() {
   stopTypewriter();
   typewriterQueue = [];
-}
-
-function resetTypewriterKr() {
-  stopTypewriterKr();
-  typewriterQueueKr = [];
 }
 
 function resetSequenceState() {
@@ -183,15 +143,9 @@ function resetSequenceState() {
   sequenceBlinkBase = null;
   framesResolved = 0;
   resetTypewriter();
-  resetTypewriterKr();
   if (bodyEl) {
     bodyEl.classList.remove('flash');
   }
-  if (messageKrEl) {
-    messageKrEl.textContent = '';
-    messageKrEl.classList.remove('visible');
-  }
-  krDisplaying = false;
   updateDebugStats();
 }
 
@@ -257,14 +211,8 @@ function enterIdle() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
-  stopTypewriterKr();
   displayState = State.IDLE;
   setMessage('');
-  if (messageKrEl) {
-    messageKrEl.textContent = '';
-    messageKrEl.classList.remove('visible');
-  }
-  krDisplaying = false;
   resetSequenceState();
   updateDebugStatus('Idle · awaiting host');
 }
@@ -274,27 +222,13 @@ function enterAssessing() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
-  stopTypewriterKr();
-  if (messageKrEl) {
-    messageKrEl.textContent = '';
-    messageKrEl.classList.remove('visible');
-  }
-  krDisplaying = false;
   displayState = State.ASSESSING;
   let dots = '';
   const base = 'assessing host';
-  const baseKr = '숙주 평가 중';
   setMessage(`${base}...`);
-  if (messageKrEl) {
-    messageKrEl.textContent = `${baseKr}...`;
-    messageKrEl.classList.add('visible');
-  }
   ellipsisTimer = setInterval(() => {
     dots = dots.length >= 3 ? '' : `${dots}.`;
     setMessage(`${base}${dots}`);
-    if (messageKrEl) {
-      messageKrEl.textContent = `${baseKr}${dots}`;
-    }
   }, 420);
   updateDebugStatus('Assessing host');
   updateDebugStats();
@@ -305,18 +239,8 @@ function enterAccepted() {
   clearIdleHold();
   stopEllipsis();
   stopTypewriter();
-  stopTypewriterKr();
-  if (messageKrEl) {
-    messageKrEl.textContent = '';
-    messageKrEl.classList.remove('visible');
-  }
-  krDisplaying = false;
   displayState = State.ACCEPTED;
   setMessage('host accepted.');
-  if (messageKrEl) {
-    messageKrEl.textContent = '숙주 승인 완료.';
-    messageKrEl.classList.add('visible');
-  }
   updateDebugStatus('Host accepted');
   updateDebugStats();
 }
@@ -326,14 +250,8 @@ function enterRunning() {
   clearIdleHold();
   stopEllipsis();
   resetTypewriter();
-  resetTypewriterKr();
   displayState = State.RUNNING;
   setMessage('');
-  if (messageKrEl) {
-    messageKrEl.textContent = '';
-    messageKrEl.classList.remove('visible');
-  }
-  krDisplaying = false;
   updateDebugStatus('Sequence running');
   updateDebugStats();
 }
@@ -370,45 +288,7 @@ function startNextChunk() {
     }
     messageEl.textContent += currentChunk.charAt(currentChunkIndex);
     currentChunkIndex += 1;
-  }, TYPING_INTERVAL_MS);
-}
-
-function startNextChunkKr() {
-  if (!typewriterQueueKr.length) {
-    stopTypewriterKr();
-    return;
-  }
-  stopEllipsis();
-  const wasDisplayingKr = krDisplaying;
-  const baseChunk = typewriterQueueKr.shift() || '';
-  const needsLineBreak = wasDisplayingKr &&
-    messageKrEl &&
-    messageKrEl.textContent &&
-    !messageKrEl.textContent.endsWith('\n');
-  currentChunkKr = `${needsLineBreak ? '\n' : ''}${baseChunk}`;
-  currentChunkIndexKr = 0;
-  krDisplaying = true;
-  if (!wasDisplayingKr && messageKrEl) {
-    messageKrEl.textContent = '';
-  }
-  if (messageKrEl) {
-    messageKrEl.classList.add('visible');
-  }
-  if (typeTimerKr) {
-    clearInterval(typeTimerKr);
-    typeTimerKr = null;
-  }
-  typeTimerKr = setInterval(() => {
-    if (currentChunkIndexKr >= currentChunkKr.length) {
-      clearInterval(typeTimerKr);
-      typeTimerKr = null;
-      startNextChunkKr();
-      return;
-    }
-    if (messageKrEl) {
-      messageKrEl.textContent += currentChunkKr.charAt(currentChunkIndexKr);
-    }
-    currentChunkIndexKr += 1;
+    fitMessageText();
   }, TYPING_INTERVAL_MS);
 }
 
@@ -418,15 +298,6 @@ function enqueueText(text) {
   typewriterQueue.push(text);
   if (!typeTimer) {
     startNextChunk();
-  }
-}
-
-function enqueueTextKr(text) {
-  if (!text) return;
-  clearIdleHold();
-  typewriterQueueKr.push(text);
-  if (!typeTimerKr) {
-    startNextChunkKr();
   }
 }
 
@@ -520,29 +391,24 @@ function decodeSegment(groupIdx, options = {}) {
   const modSum = hasBlinkData ? sumMod(actualValues) : Math.floor(Math.random() * FRAME_SLOTS);
 
   let englishChunk = '';
-  let koreanChunk = '';
   switch (groupIdx) {
     case 0: {
       englishChunk = `${INTROS[dominant]} `;
-      koreanChunk = `${INTROS_KR[dominant]} `;
       break;
     }
     case 1: {
       const moodIdx = (dominant + segmentMeta[0].modSum) % FRAME_SLOTS;
       englishChunk = `${MOODS[moodIdx]}\n`;
-      koreanChunk = `${MOODS_KR[moodIdx]}\n`;
       break;
     }
     case 2: {
       const bridgeIdx = (dominant + segmentMeta[1].modSum) % FRAME_SLOTS;
       englishChunk = `${BRIDGES[bridgeIdx]} `;
-      koreanChunk = `${BRIDGES_KR[bridgeIdx]} `;
       break;
     }
     case 3: {
       const codaIdx = (dominant + segmentMeta[2].modSum) % FRAME_SLOTS;
       englishChunk = `${CODAS[codaIdx]}`;
-      koreanChunk = `${CODAS_KR[codaIdx]}`;
       break;
     }
     default:
@@ -552,7 +418,6 @@ function decodeSegment(groupIdx, options = {}) {
   decodedSegments[groupIdx] = englishChunk;
   segmentMeta[groupIdx] = { modSum, missing };
   enqueueText(englishChunk);
-  enqueueTextKr(koreanChunk);
   return true;
 }
 
@@ -591,11 +456,9 @@ function appendGlitchNoteIfNeeded() {
   if (missing > 0) {
     const idx = (missing - 1) % GLITCH_NOTES.length;
     const note = GLITCH_NOTES[idx];
-    const noteKr = GLITCH_NOTES_KR[idx];
     const hasSegments = decodedSegments.some((segment) => segment);
     const prefix = hasSegments ? '\n' : '';
     enqueueText(`${prefix}${note}`);
-    enqueueTextKr(`${prefix}${noteKr}`);
   }
   glitchAppended = true;
 }
@@ -941,6 +804,8 @@ function connect() {
     setTimeout(connect, 1000);
   });
 }
+
+window.addEventListener('resize', fitMessageText);
 
 connect();
 enterIdle();

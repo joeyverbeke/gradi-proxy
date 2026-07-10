@@ -49,32 +49,18 @@
         padding: 24px;
       }
       #message {
-        font-size: clamp(0.9rem, 2.3vw, 1.6rem);
+        width: 100%;
+        font-size: 1.6rem;
         line-height: 1.5;
         letter-spacing: 0.04em;
         text-transform: lowercase;
-        white-space: pre-wrap;
+        white-space: pre;      /* never wrap a phrase onto a second line */
         text-align: center;
+        overflow: hidden;
         opacity: 0;
         transition: opacity 220ms ease;
       }
       #message.visible {
-        opacity: 1;
-      }
-      #message-kr {
-        font-size: clamp(0.9rem, 2.3vw, 1.6rem);
-        line-height: 1.5;
-        letter-spacing: 0.06em;
-        text-transform: lowercase;
-        white-space: pre-wrap;
-        text-align: center;
-        opacity: 0;
-        transition: opacity 220ms ease;
-        max-width: 34em;
-        margin: 24px auto 0;
-        width: 100%;
-      }
-      #message-kr.visible {
         opacity: 1;
       }
       #debug-panel {
@@ -120,7 +106,6 @@
     </div>
     <div id="app">
       <div id="message"></div>
-      <div id="message-kr"></div>
     </div>
     <script src="/main.js" type="module"></script>
   </body>
